@@ -1114,3 +1114,171 @@ function testRewriteHistoryStructure() {
     Logger.log('✅ 必須列はすべて存在します');
   }
 }
+
+// ============================================
+// onEditトリガー（シート編集時の自動処理）
+// ============================================
+
+/**
+ * タスク管理シートのonEditトリガー
+ * ステータスが「完了」に変更されたら自動でリライト履歴に登録
+ * 
+ * 【設定方法】
+ * 1. GASエディタで「トリガー」（時計アイコン）をクリック
+ * 2. 「トリガーを追加」をクリック
+ * 3. 実行する関数: onTaskSheetEdit
+ * 4. イベントの種類: スプレッドシートから / 編集時
+ * 5. 保存
+ */
+function onTaskSheetEdit(e) {
+  try {
+    // イベントオブジェクトがない場合は終了
+    if (!e || !e.range) return;
+    
+    const sheet = e.range.getSheet();
+    const sheetName = sheet.getName();
+    
+    // タスク管理シート以外は無視
+    if (sheetName !== 'タスク管理') return;
+    
+    const row = e.range.getRow();
+    const col = e.range.getColumn();
+    
+    // ヘッダー行は無視
+    if (row === 1) return;
+    
+    // ヘッダーを取得
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const statusCol = headers.indexOf('status') + 1;
+    
+    // ステータス列の編集でない場合は終了
+    if (col !== statusCol) return;
+    
+    const newValue = e.value;
+    
+    // 「完了」に変更された場合のみ処理
+    if (newValue === '完了') {
+      processTaskCompletion(sheet, row, headers);
+    }
+    
+  } catch (error) {
+    Logger.log('onTaskSheetEditエラー: ' + error.message);
+  }
+}
+
+
+/**
+ * タスク完了時の処理（行番号ベース）
+ * @param {Sheet} sheet - シートオブジェクト
+ * @param {number} row - 行番号
+ * @param {Array} headers - ヘッダー配列
+ */
+function processTaskCompletion(sheet, row, headers) {
+  try {
+    Logger.log('=== タスク完了処理開始 (行: ' + row + ') ===');
+    
+    // 列インデックスを取得
+    const colIndex = {};
+    headers.forEach((header, idx) => {
+      colIndex[header] = idx + 1; // 1-indexed
+    });
+    
+    // 現在の行データを取得
+    const rowData = sheet.getRange(row, 1, 1, headers.length).getValues()[0];
+    const taskData = {};
+    headers.forEach((header, idx) => {
+      taskData[header] = rowData[idx];
+    });
+    
+    const now = new Date();
+    
+    // 1. task_idが空の場合は自動生成
+    if (!taskData.task_id || taskData.task_id === '') {
+      const newTaskId = generateTaskId();
+      sheet.getRange(row, colIndex.task_id).setValue(newTaskId);
+      taskData.task_id = newTaskId;
+      Logger.log('task_id自動生成: ' + newTaskId);
+    }
+    
+    // 2. completed_dateが空の場合は現在日時を設定
+    if (!taskData.completed_date || taskData.completed_date === '') {
+      sheet.getRange(row, colIndex.completed_date).setValue(now);
+      taskData.completed_date = now;
+      Logger.log('completed_date設定: ' + now);
+    }
+    
+    // 3. cooling_daysが空の場合は自動設定
+    if (!taskData.cooling_days || taskData.cooling_days === '') {
+      const coolingDays = COOLING_PERIODS[taskData.task_type] || COOLING_PERIODS.default;
+      sheet.getRange(row, colIndex.cooling_days).setValue(coolingDays);
+      taskData.cooling_days = coolingDays;
+      Logger.log('cooling_days設定: ' + coolingDays);
+    }
+    
+    // 4. sourceが空の場合はデフォルト設定
+    if (!taskData.source || taskData.source === '') {
+      sheet.getRange(row, colIndex.source).setValue('ユーザー追加');
+      taskData.source = 'ユーザー追加';
+    }
+    
+    // 5. リライト履歴に自動登録
+    const historyResult = addToRewriteHistoryFromTask({
+      pageUrl: taskData.page_url,
+      taskType: taskData.task_type,
+      changesSummary: taskData.actual_change || taskData.task_detail,
+      aiSuggestion: taskData.source === 'AI提案' ? taskData.task_detail : '',
+      source: taskData.source,
+      taskId: taskData.task_id
+    });
+    
+    if (historyResult.success) {
+      Logger.log('✅ リライト履歴登録成功: ' + historyResult.rewriteId);
+    } else {
+      Logger.log('❌ リライト履歴登録失敗: ' + historyResult.error);
+    }
+    
+    Logger.log('=== タスク完了処理終了 ===');
+    
+  } catch (error) {
+    Logger.log('processTaskCompletionエラー: ' + error.message);
+  }
+}
+
+
+/**
+ * トリガーを手動で設定する関数
+ * この関数を1回実行すると、onEditトリガーが設定されます
+ */
+function setupTaskEditTrigger() {
+  // 既存のトリガーを確認
+  const triggers = ScriptApp.getProjectTriggers();
+  const existingTrigger = triggers.find(t => t.getHandlerFunction() === 'onTaskSheetEdit');
+  
+  if (existingTrigger) {
+    Logger.log('トリガーは既に設定されています');
+    return;
+  }
+  
+  // 新しいトリガーを作成
+  ScriptApp.newTrigger('onTaskSheetEdit')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onEdit()
+    .create();
+  
+  Logger.log('✅ onTaskSheetEditトリガーを設定しました');
+}
+
+
+/**
+ * トリガーを削除する関数
+ */
+function removeTaskEditTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'onTaskSheetEdit') {
+      ScriptApp.deleteTrigger(trigger);
+      Logger.log('トリガーを削除しました: ' + trigger.getHandlerFunction());
+    }
+  });
+}

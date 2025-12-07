@@ -1,9 +1,19 @@
-function setClaudeAPIKey() {
-  const apiKey = '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';
+/**
+ * Claude API Key確認用
+ * APIキーはGASの「プロジェクトの設定」→「スクリプトプロパティ」で設定してください
+ */
+function checkClaudeAPIKey() {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('CLAUDE_API_KEY');
   
-  PropertiesService.getScriptProperties().setProperty('CLAUDE_API_KEY', apiKey);
+  if (!apiKey) {
+    Logger.log('❌ CLAUDE_API_KEYが設定されていません');
+    Logger.log('→ GASの「プロジェクトの設定」→「スクリプトプロパティ」で設定してください');
+    return false;
+  }
   
-  Logger.log('Claude API Keyを保存しました');
+  Logger.log('✅ CLAUDE_API_KEYは設定されています');
+  Logger.log('キーの先頭: ' + apiKey.substring(0, 20) + '...');
+  return true;
 }
 
 function testClaudeAPI() {

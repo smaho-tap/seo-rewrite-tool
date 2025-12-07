@@ -314,58 +314,7 @@ function calculateTotalPriorityScore(opportunityScore, performanceScore, busines
   return Math.round(totalScore);
 }
 
-/**
- * 優先度上位ページを取得（フィルター付き）
- */
-function getTopPriorityPagesFiltered(limit) {
-  limit = limit || 10;
-  
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('統合データ');
-  var data = sheet.getDataRange().getValues();
-  var headers = data[0];
-  
-  var urlIndex = headers.indexOf('page_url');
-  var titleIndex = headers.indexOf('page_title');
-  var totalScoreIndex = headers.indexOf('total_priority_score');
-  var opportunityIndex = headers.indexOf('opportunity_score');
-  var performanceIndex = headers.indexOf('performance_score');
-  var businessImpactIndex = headers.indexOf('business_impact_score');
-  var targetKWIndex = headers.indexOf('target_keyword');
-  var gyronPositionIndex = headers.indexOf('gyron_position');
-  
-  var pages = [];
-  
-  for (var i = 1; i < data.length; i++) {
-    var url = String(data[i][urlIndex] || '').trim();
-    var title = String(data[i][titleIndex] || '').trim();
-    var totalScore = parseFloat(data[i][totalScoreIndex]) || 0;
-    var opportunityScore = parseFloat(data[i][opportunityIndex]) || 0;
-    var performanceScore = parseFloat(data[i][performanceIndex]) || 0;
-    var businessImpactScore = parseFloat(data[i][businessImpactIndex]) || 0;
-    var targetKW = targetKWIndex >= 0 ? String(data[i][targetKWIndex] || '').trim() : '';
-    var gyronPosition = gyronPositionIndex >= 0 ? parseFloat(data[i][gyronPositionIndex]) || null : null;
-    
-    if (url && totalScore > 0) {
-      pages.push({
-        url: url,
-        title: title,
-        score: totalScore,
-        totalScore: totalScore,
-        opportunityScore: opportunityScore,
-        performanceScore: performanceScore,
-        businessImpactScore: businessImpactScore,
-        targetKeyword: targetKW,
-        gyronPosition: gyronPosition
-      });
-    }
-  }
-  
-  // スコア降順でソート
-  pages.sort(function(a, b) { return b.score - a.score; });
-  
-  return pages.slice(0, limit);
-}
+
 
 /**
  * 優先度上位ページを取得
@@ -379,6 +328,9 @@ function getTopPriorityPages(limit = 10) {
   const urlIndex = headers.indexOf('page_url');
   const titleIndex = headers.indexOf('page_title');
   const scoreIndex = headers.indexOf('total_priority_score');
+  const opportunityIndex = headers.indexOf('opportunity_score');
+  const performanceIndex = headers.indexOf('performance_score');
+  const businessImpactIndex = headers.indexOf('business_impact_score');
   const targetKWIndex = headers.indexOf('target_keyword');
   const gyronPositionIndex = headers.indexOf('gyron_position');
   
@@ -388,6 +340,9 @@ function getTopPriorityPages(limit = 10) {
     const url = String(data[i][urlIndex] || '').trim();
     const title = String(data[i][titleIndex] || '').trim();
     const score = parseFloat(data[i][scoreIndex]) || 0;
+    const opportunityScore = opportunityIndex >= 0 ? parseFloat(data[i][opportunityIndex]) || 0 : 0;
+    const performanceScore = performanceIndex >= 0 ? parseFloat(data[i][performanceIndex]) || 0 : 0;
+    const businessImpactScore = businessImpactIndex >= 0 ? parseFloat(data[i][businessImpactIndex]) || 0 : 0;
     const targetKW = targetKWIndex >= 0 ? String(data[i][targetKWIndex] || '').trim() : '';
     const gyronPosition = gyronPositionIndex >= 0 ? parseFloat(data[i][gyronPositionIndex]) || null : null;
     
@@ -395,7 +350,11 @@ function getTopPriorityPages(limit = 10) {
       pages.push({ 
         url, 
         title, 
-        score, 
+        score,
+        totalScore: score,
+        opportunityScore: opportunityScore,
+        performanceScore: performanceScore,
+        businessImpactScore: businessImpactScore,
         rowIndex: i,
         targetKeyword: targetKW,
         gyronPosition: gyronPosition
