@@ -1,5 +1,5 @@
 function setClaudeAPIKey() {
-  const apiKey = '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';
+  const apiKey = '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';
   
   PropertiesService.getScriptProperties().setProperty('CLAUDE_API_KEY', apiKey);
   

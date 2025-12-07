@@ -436,15 +436,97 @@ function extractComparisonDays(userMessage) {
 }
 
 /**
- * ページURLを抽出
+ * ページURLを抽出（改善版 - 3パターン対応）
+ * 対応形式:
+ * 1. 完全URL: https://smaho-tap.com/iphonerepair-battery-replacement-makes-sense
+ * 2. パス形式: /iphonerepair-battery-replacement-makes-sense
+ * 3. スラッグ形式: iphonerepair-battery-replacement-makes-sense
  */
 function extractPageUrl(userMessage) {
-  // 「/xxx」形式のURLを抽出
-  var match = userMessage.match(/\/[a-zA-Z0-9\-_\/]+/);
-  if (match) {
-    return match[0];
+  Logger.log('=== extractPageUrl開始 ===');
+  Logger.log('入力メッセージ: ' + userMessage);
+  
+  var extractedPath = null;
+  
+  // =============================================
+  // パターン1: 完全URL（https://smaho-tap.com/xxx）
+  // =============================================
+  var fullUrlMatch = userMessage.match(/https?:\/\/[^\/\s]+\/([a-zA-Z0-9\-_\/]+)/);
+  if (fullUrlMatch) {
+    extractedPath = '/' + fullUrlMatch[1].replace(/\/$/, ''); // 末尾スラッシュ除去
+    Logger.log('完全URLから抽出: ' + extractedPath);
+    return extractedPath;
   }
   
+  // =============================================
+  // パターン2: パス形式（/xxx）
+  // =============================================
+  var pathMatch = userMessage.match(/\/([a-zA-Z0-9\-_]+(?:\/[a-zA-Z0-9\-_]+)*)/);
+  if (pathMatch) {
+    extractedPath = '/' + pathMatch[1].replace(/\/$/, '');
+    Logger.log('パス形式から抽出: ' + extractedPath);
+    return extractedPath;
+  }
+  
+  // =============================================
+  // パターン3: スラッグ形式（/なし）→ 統合データから検索
+  // =============================================
+  // 英字で始まり、英数字・ハイフン・アンダースコアで構成される6文字以上の文字列
+  var slugMatch = userMessage.match(/\b([a-zA-Z][a-zA-Z0-9\-_]{5,})\b/);
+  if (slugMatch) {
+    var potentialSlug = slugMatch[1].toLowerCase();
+    Logger.log('スラッグ候補: ' + potentialSlug);
+    
+    // 除外ワード（一般的な単語を誤検出しないように）
+    var excludeWords = ['リライト', '提案して', 'ください', 'おねがい', 'analysis', 'please', 'rewrite'];
+    var isExcluded = excludeWords.some(function(word) {
+      return potentialSlug.indexOf(word.toLowerCase()) !== -1;
+    });
+    
+    if (!isExcluded) {
+      // 統合データから該当するURLを検索
+      try {
+        var ss = SpreadsheetApp.getActiveSpreadsheet();
+        var sheet = ss.getSheetByName('統合データ');
+        
+        if (sheet) {
+          var data = sheet.getDataRange().getValues();
+          var headers = data[0];
+          var urlIdx = headers.indexOf('page_url');
+          
+          if (urlIdx !== -1) {
+            // 完全一致を優先
+            for (var i = 1; i < data.length; i++) {
+              var rowUrl = (data[i][urlIdx] || '').toString();
+              var normalizedRowUrl = rowUrl.toLowerCase().replace(/^\//, '').replace(/\/$/, '');
+              
+              if (normalizedRowUrl === potentialSlug) {
+                extractedPath = rowUrl.startsWith('/') ? rowUrl : '/' + rowUrl;
+                Logger.log('スラッグ完全一致: ' + potentialSlug + ' → ' + extractedPath);
+                return extractedPath;
+              }
+            }
+            
+            // 部分一致（スラッグがURLに含まれる場合）
+            for (var i = 1; i < data.length; i++) {
+              var rowUrl = (data[i][urlIdx] || '').toString();
+              var normalizedRowUrl = rowUrl.toLowerCase();
+              
+              if (normalizedRowUrl.indexOf(potentialSlug) !== -1) {
+                extractedPath = rowUrl.startsWith('/') ? rowUrl : '/' + rowUrl;
+                Logger.log('スラッグ部分一致: ' + potentialSlug + ' → ' + extractedPath);
+                return extractedPath;
+              }
+            }
+          }
+        }
+      } catch (error) {
+        Logger.log('URL検索エラー: ' + error.message);
+      }
+    }
+  }
+  
+  Logger.log('URL抽出失敗: null');
   return null;
 }
 
