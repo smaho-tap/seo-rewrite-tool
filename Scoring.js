@@ -385,6 +385,9 @@ function generateRewriteSuggestions(pageUrl) {
     // Claude APIで提案生成
     var suggestion = callClaudeForSuggestion(pageData);
     
+    // ★コンテンツ生成ボタンを追加
+    suggestion = addContentGenerationButtons(suggestion, pageUrl);
+    
     Logger.log('=== AI提案生成完了 ===');
     return { success: true, suggestion: suggestion };
     
@@ -665,7 +668,7 @@ function getSuggestionFormat(gyronPosition) {
 
 /**
  * ユーザープロンプト構築
- * ★v2.2: page_title追加、ターゲットKW追加、順位別警告・制約を追加
+ * ★v2.4: ページ構造情報（スクレイピング）+ 冷却期間情報を追加
  */
 function buildSuggestionPrompt(pageData) {
   // CTRの安全な処理
@@ -682,19 +685,67 @@ function buildSuggestionPrompt(pageData) {
   // 順位に応じた提案形式を取得
   var suggestionFormat = getSuggestionFormat(gyronPosition);
   
+  // ★ページ構造情報を取得（スクレイピング）
+  var pageStructure = getPageStructureCached(pageData.page_url);
+  var structureInfo = '';
+  
+  if (pageStructure && pageStructure.success) {
+    structureInfo = `
+【現在のページ構造（実測値）】
+- タイトルタグ: ${pageStructure.title || '取得できません'}
+- H1タグ: ${pageStructure.h1 || '取得できません'}
+- メタディスクリプション: ${pageStructure.metaDescription || '取得できません'}
+- 本文文字数: 約${pageStructure.wordCount || 0}文字
+- 画像数: ${pageStructure.hasImages || 0}枚
+- H2見出し数: ${pageStructure.h2List ? pageStructure.h2List.length : 0}個
+`;
+    
+    if (pageStructure.h2List && pageStructure.h2List.length > 0) {
+      structureInfo += '\n【H2見出し一覧】\n';
+      pageStructure.h2List.forEach(function(h2, i) {
+        structureInfo += (i + 1) + '. ' + h2 + '\n';
+      });
+    }
+  } else {
+    structureInfo = '\n【ページ構造】\n※ページ情報を取得できませんでした\n';
+  }
+  
+  // ★冷却期間情報を取得
+  var coolingWarning = '';
+  var coolingStatus = checkCoolingStatus(pageData.page_url);
+  
+  if (coolingStatus && coolingStatus.isCooling && coolingStatus.coolingTasks && coolingStatus.coolingTasks.length > 0) {
+    coolingWarning = '\n【⚠️ 重要：冷却期間中のタスク】\n';
+    coolingWarning += '以下のタスクは最近実施済みのため、提案から除外してください：\n';
+    
+    coolingStatus.coolingTasks.forEach(function(task) {
+      var endDateStr = '';
+      if (task.endDate) {
+        endDateStr = Utilities.formatDate(new Date(task.endDate), 'Asia/Tokyo', 'yyyy/MM/dd');
+      }
+      coolingWarning += '- ' + task.taskType + '（' + endDateStr + 'まで冷却期間、残り' + task.remainingDays + '日）\n';
+    });
+    
+    coolingWarning += '\n上記のタスクについては「最近実施済みのため様子見を推奨」と記載し、';
+    coolingWarning += '代わりに以下のタスクを中心に提案してください：\n';
+    
+    if (coolingStatus.availableTasks && coolingStatus.availableTasks.length > 0) {
+      coolingWarning += '提案可能なタスク: ' + coolingStatus.availableTasks.join(', ') + '\n';
+    } else {
+      coolingWarning += '※現在提案可能なタスクがありません。様子見を推奨してください。\n';
+    }
+  }
+  
   var prompt = `以下のページのリライト提案をお願いします。
 
 【ページURL】
 ${pageData.page_url}
-
-【現在のタイトル】
-${pageData.page_title || '取得できません'}
-
+${structureInfo}
 【ターゲットキーワード情報】
 - ターゲットKW: ${targetKeyword || '未設定'}
 - ターゲットKW順位: ${gyronPosition ? gyronPosition + '位' : 'N/A'}
 - GSC平均順位: ${pageData.avg_position || 'N/A'}位（全クエリ平均）
-${positionWarning}
+${positionWarning}${coolingWarning}
 【現在のパフォーマンス】
 - CTR: ${ctrPercent}%
 - 月間クリック数: ${pageData.total_clicks_30d || 0}回
@@ -713,7 +764,7 @@ ${positionWarning}
 ${pageData.top_queries || 'データなし'}
 
 このページを改善して検索順位とCTRを向上させたいです。
-上記の順位に応じた警告・制約を必ず遵守して、以下の形式で提案してください：
+上記の順位に応じた警告・制約、および現在のページ構造を踏まえて、以下の形式で提案してください：
 
 ${suggestionFormat}`;
 
@@ -1762,17 +1813,15 @@ function testCoolingIntegration() {
 
 /**
  * 3ヶ月未満の記事を除外した優先ページ取得（拡張版）
- * 冷却期間 + 投稿日フィルターの両方を適用
+ * ★改善版: 冷却期間中でもページは除外せず、冷却情報を付加して表示
  * @param {number} limit - 取得件数
- * @return {Array} フィルタリング済みページ
+ * @return {Array} フィルタリング済みページ（冷却情報付き）
  */
 function getTopPriorityPagesFiltered(limit = 10) {
-  // 既存の優先ページ取得（多めに取得）
+  // 優先ページ取得（多めに取得）
   let pages = [];
   
-  if (typeof getTopPriorityPagesWithCooling === 'function') {
-    pages = getTopPriorityPagesWithCooling(limit * 3);
-  } else if (typeof getTopPriorityPages === 'function') {
+  if (typeof getTopPriorityPages === 'function') {
     pages = getTopPriorityPages(limit * 3);
   } else {
     Logger.log('警告: 優先ページ取得関数が見つかりません');
@@ -1785,6 +1834,18 @@ function getTopPriorityPagesFiltered(limit = 10) {
     Logger.log('投稿日フィルター: ' + result.message);
     pages = result.filtered;
   }
+  
+  // ★改善: 冷却期間によるページ除外をやめ、冷却情報を付加するのみ
+  pages = pages.map(page => {
+    const coolingStatus = checkCoolingStatus(page.url);
+    return {
+      ...page,
+      coolingStatus: coolingStatus,
+      hasCoolingTasks: coolingStatus.isCooling,
+      coolingTasks: coolingStatus.coolingTasks || [],
+      availableTasks: coolingStatus.availableTasks || []
+    };
+  });
   
   // 件数制限
   return pages.slice(0, limit);
@@ -2297,4 +2358,1191 @@ function debugGSCQueryData() {
   queryData.slice(0, 10).forEach((q, i) => {
     Logger.log((i+1) + '. ' + q.query + ' | 表示: ' + q.impressions + ' | クリック: ' + q.clicks);
   });
+}
+
+// ============================================
+// ページ構造取得機能（スクレイピング）
+// ============================================
+
+/**
+ * ページの実際の構造情報を取得
+ * @param {string} pageUrl - ページURL（パスまたはフルURL）
+ * @return {Object} ページ構造情報
+ */
+function fetchPageStructure(pageUrl) {
+  try {
+    // フルURLに変換
+    var fullUrl = convertToFullUrl(pageUrl);
+    
+    if (!fullUrl) {
+      return { success: false, error: 'URLを解決できません' };
+    }
+    
+    Logger.log('ページ取得開始: ' + fullUrl);
+    
+    // ページHTMLを取得
+    var response = UrlFetchApp.fetch(fullUrl, {
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; SEORewriteTool/1.0)'
+      }
+    });
+    
+    var responseCode = response.getResponseCode();
+    if (responseCode !== 200) {
+      return { success: false, error: 'HTTPエラー: ' + responseCode };
+    }
+    
+    var html = response.getContentText('UTF-8');
+    
+    // 各要素を抽出
+    var structure = {
+      success: true,
+      url: fullUrl,
+      title: extractTitle(html),
+      metaDescription: extractMetaDescription(html),
+      h1: extractH1(html),
+      h2List: extractH2List(html),
+      wordCount: estimateWordCount(html),
+      hasImages: countImages(html),
+      hasFAQ: detectFAQSchema(html),
+      fetchedAt: new Date().toISOString()
+    };
+    
+    Logger.log('ページ構造取得成功: ' + structure.title);
+    return structure;
+    
+  } catch (error) {
+    Logger.log('ページ取得エラー: ' + error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * パスURLをフルURLに変換
+ */
+function convertToFullUrl(pageUrl) {
+  if (!pageUrl) return null;
+  
+  // すでにフルURLの場合
+  if (pageUrl.startsWith('http://') || pageUrl.startsWith('https://')) {
+    return pageUrl;
+  }
+  
+  // 設定シートからベースURLを取得
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var settingsSheet = ss.getSheetByName('設定・マスタ');
+  
+  if (!settingsSheet) {
+    Logger.log('設定シートが見つかりません');
+    return null;
+  }
+  
+  var data = settingsSheet.getDataRange().getValues();
+  var baseUrl = '';
+  
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === 'SITE_URL' || data[i][0] === 'BASE_URL') {
+      baseUrl = String(data[i][1] || '').trim();
+      break;
+    }
+  }
+  
+  if (!baseUrl) {
+    Logger.log('ベースURLが設定されていません');
+    return null;
+  }
+  
+  // 末尾スラッシュを調整
+  baseUrl = baseUrl.replace(/\/$/, '');
+  var path = pageUrl.startsWith('/') ? pageUrl : '/' + pageUrl;
+  
+  return baseUrl + path;
+}
+
+/**
+ * titleタグを抽出
+ */
+function extractTitle(html) {
+  var match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].trim());
+  }
+  return null;
+}
+
+/**
+ * メタディスクリプションを抽出
+ */
+function extractMetaDescription(html) {
+  // name="description" パターン
+  var match = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["'][^>]*>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].trim());
+  }
+  
+  // content が先に来るパターン
+  match = html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']description["'][^>]*>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].trim());
+  }
+  
+  return null;
+}
+
+/**
+ * H1タグを抽出
+ */
+function extractH1(html) {
+  var match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].trim());
+  }
+  
+  // タグ内にspanなどがある場合
+  match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  if (match && match[1]) {
+    var text = match[1].replace(/<[^>]+>/g, '').trim();
+    return decodeHtmlEntities(text);
+  }
+  
+  return null;
+}
+
+/**
+ * H2タグのリストを抽出
+ */
+function extractH2List(html) {
+  var h2List = [];
+  var regex = /<h2[^>]*>([\s\S]*?)<\/h2>/gi;
+  var match;
+  
+  while ((match = regex.exec(html)) !== null) {
+    var text = match[1].replace(/<[^>]+>/g, '').trim();
+    if (text) {
+      h2List.push(decodeHtmlEntities(text));
+    }
+  }
+  
+  return h2List;
+}
+
+/**
+ * 本文の文字数を推定
+ */
+function estimateWordCount(html) {
+  // bodyタグ内のテキストを抽出
+  var bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (!bodyMatch) return 0;
+  
+  var bodyHtml = bodyMatch[1];
+  
+  // script, style, navなどを除去
+  bodyHtml = bodyHtml.replace(/<script[\s\S]*?<\/script>/gi, '');
+  bodyHtml = bodyHtml.replace(/<style[\s\S]*?<\/style>/gi, '');
+  bodyHtml = bodyHtml.replace(/<nav[\s\S]*?<\/nav>/gi, '');
+  bodyHtml = bodyHtml.replace(/<header[\s\S]*?<\/header>/gi, '');
+  bodyHtml = bodyHtml.replace(/<footer[\s\S]*?<\/footer>/gi, '');
+  
+  // HTMLタグを除去
+  var text = bodyHtml.replace(/<[^>]+>/g, ' ');
+  
+  // 空白を正規化
+  text = text.replace(/\s+/g, '');
+  
+  return text.length;
+}
+
+/**
+ * 画像数をカウント
+ */
+function countImages(html) {
+  var matches = html.match(/<img[^>]+>/gi);
+  return matches ? matches.length : 0;
+}
+
+/**
+ * FAQスキーマの有無を検出
+ */
+function detectFAQSchema(html) {
+  return html.includes('FAQPage') || 
+         html.includes('Question') || 
+         html.includes('faq') ||
+         html.includes('よくある質問');
+}
+
+/**
+ * HTMLエンティティをデコード
+ */
+function decodeHtmlEntities(text) {
+  if (!text) return text;
+  
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
+/**
+ * ページ構造をキャッシュ付きで取得
+ * 統合データシートに保存して再利用
+ */
+function getPageStructureCached(pageUrl) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('統合データ');
+  
+  if (!sheet) {
+    return fetchPageStructure(pageUrl);
+  }
+  
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  
+  var urlIdx = headers.indexOf('page_url');
+  var titleIdx = headers.indexOf('page_title');
+  var h1Idx = headers.indexOf('h1_tag');
+  var metaDescIdx = headers.indexOf('meta_description');
+  var h2ListIdx = headers.indexOf('h2_list');
+  var lastFetchIdx = headers.indexOf('structure_fetched_at');
+  
+  // 該当行を検索
+  var targetRow = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeUrlPath(data[i][urlIdx]) === normalizeUrlPath(pageUrl)) {
+      targetRow = i;
+      break;
+    }
+  }
+  
+  if (targetRow === -1) {
+    return fetchPageStructure(pageUrl);
+  }
+  
+  // キャッシュが7日以内なら再利用
+  var lastFetch = lastFetchIdx >= 0 ? data[targetRow][lastFetchIdx] : null;
+  var cacheValid = false;
+  
+  if (lastFetch) {
+    var fetchDate = new Date(lastFetch);
+    var now = new Date();
+    var diffDays = (now - fetchDate) / (1000 * 60 * 60 * 24);
+    cacheValid = diffDays < 7;
+  }
+  
+  // キャッシュが有効で、H1が存在する場合は再利用
+  if (cacheValid && h1Idx >= 0 && data[targetRow][h1Idx]) {
+    return {
+      success: true,
+      url: pageUrl,
+      title: titleIdx >= 0 ? data[targetRow][titleIdx] : null,
+      h1: h1Idx >= 0 ? data[targetRow][h1Idx] : null,
+      metaDescription: metaDescIdx >= 0 ? data[targetRow][metaDescIdx] : null,
+      h2List: h2ListIdx >= 0 ? parseH2List(data[targetRow][h2ListIdx]) : [],
+      fromCache: true
+    };
+  }
+  
+  // キャッシュがない or 古い場合は取得して保存
+  var structure = fetchPageStructure(pageUrl);
+  
+  if (structure.success) {
+    savePageStructure(sheet, headers, targetRow, structure);
+  }
+  
+  return structure;
+}
+
+/**
+ * H2リストをパース
+ */
+function parseH2List(h2String) {
+  if (!h2String) return [];
+  if (Array.isArray(h2String)) return h2String;
+  return String(h2String).split('\n').filter(function(s) { return s.trim(); });
+}
+
+/**
+ * ページ構造をシートに保存
+ */
+function savePageStructure(sheet, headers, rowIndex, structure) {
+  var h1Idx = headers.indexOf('h1_tag');
+  var metaDescIdx = headers.indexOf('meta_description');
+  var h2ListIdx = headers.indexOf('h2_list');
+  var wordCountIdx = headers.indexOf('word_count');
+  var lastFetchIdx = headers.indexOf('structure_fetched_at');
+  
+  // 列がなければ追加
+  var lastCol = headers.length;
+  
+  if (h1Idx === -1) {
+    h1Idx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('h1_tag');
+    lastCol++;
+  }
+  
+  if (metaDescIdx === -1) {
+    metaDescIdx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('meta_description');
+    lastCol++;
+  }
+  
+  if (h2ListIdx === -1) {
+    h2ListIdx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('h2_list');
+    lastCol++;
+  }
+  
+  if (wordCountIdx === -1) {
+    wordCountIdx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('word_count');
+    lastCol++;
+  }
+  
+  if (lastFetchIdx === -1) {
+    lastFetchIdx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('structure_fetched_at');
+    lastCol++;
+  }
+  
+  // データを保存
+  var row = rowIndex + 1; // 1-indexed
+  
+  if (structure.h1) {
+    sheet.getRange(row, h1Idx + 1).setValue(structure.h1);
+  }
+  if (structure.metaDescription) {
+    sheet.getRange(row, metaDescIdx + 1).setValue(structure.metaDescription);
+  }
+  if (structure.h2List && structure.h2List.length > 0) {
+    sheet.getRange(row, h2ListIdx + 1).setValue(structure.h2List.join('\n'));
+  }
+  if (structure.wordCount) {
+    sheet.getRange(row, wordCountIdx + 1).setValue(structure.wordCount);
+  }
+  sheet.getRange(row, lastFetchIdx + 1).setValue(new Date());
+  
+  Logger.log('ページ構造を保存しました: 行' + row);
+}
+
+/**
+ * テスト: ページ構造取得
+ */
+function testFetchPageStructure() {
+  var testUrl = '/iphonerepair-battery70-danger';
+  
+  Logger.log('=== ページ構造取得テスト ===');
+  
+  var structure = fetchPageStructure(testUrl);
+  
+  if (structure.success) {
+    Logger.log('タイトル: ' + structure.title);
+    Logger.log('H1: ' + structure.h1);
+    Logger.log('メタディスクリプション: ' + (structure.metaDescription || '').substring(0, 50) + '...');
+    Logger.log('H2数: ' + structure.h2List.length);
+    structure.h2List.forEach(function(h2, i) {
+      Logger.log('  H2-' + (i+1) + ': ' + h2);
+    });
+    Logger.log('推定文字数: ' + structure.wordCount);
+    Logger.log('画像数: ' + structure.hasImages);
+  } else {
+    Logger.log('エラー: ' + structure.error);
+  }
+  
+  Logger.log('=== テスト完了 ===');
+}// ============================================
+// ページ構造取得機能（スクレイピング）
+// ============================================
+
+/**
+ * ページの実際の構造情報を取得
+ * @param {string} pageUrl - ページURL（パスまたはフルURL）
+ * @return {Object} ページ構造情報
+ */
+function fetchPageStructure(pageUrl) {
+  try {
+    // フルURLに変換
+    var fullUrl = convertToFullUrl(pageUrl);
+    
+    if (!fullUrl) {
+      return { success: false, error: 'URLを解決できません' };
+    }
+    
+    Logger.log('ページ取得開始: ' + fullUrl);
+    
+    // ページHTMLを取得
+    var response = UrlFetchApp.fetch(fullUrl, {
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; SEORewriteTool/1.0)'
+      }
+    });
+    
+    var responseCode = response.getResponseCode();
+    if (responseCode !== 200) {
+      return { success: false, error: 'HTTPエラー: ' + responseCode };
+    }
+    
+    var html = response.getContentText('UTF-8');
+    
+    // 各要素を抽出
+    var structure = {
+      success: true,
+      url: fullUrl,
+      title: extractTitle(html),
+      metaDescription: extractMetaDescription(html),
+      h1: extractH1(html),
+      h2List: extractH2List(html),
+      wordCount: estimateWordCount(html),
+      hasImages: countImages(html),
+      hasFAQ: detectFAQSchema(html),
+      fetchedAt: new Date().toISOString()
+    };
+    
+    Logger.log('ページ構造取得成功: ' + structure.title);
+    return structure;
+    
+  } catch (error) {
+    Logger.log('ページ取得エラー: ' + error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * パスURLをフルURLに変換
+ */
+function convertToFullUrl(pageUrl) {
+  if (!pageUrl) return null;
+  
+  // すでにフルURLの場合
+  if (pageUrl.startsWith('http://') || pageUrl.startsWith('https://')) {
+    return pageUrl;
+  }
+  
+  // 設定シートからベースURLを取得
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var settingsSheet = ss.getSheetByName('設定・マスタ');
+  
+  if (!settingsSheet) {
+    Logger.log('設定シートが見つかりません');
+    return null;
+  }
+  
+  var data = settingsSheet.getDataRange().getValues();
+  var baseUrl = '';
+  
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === 'SITE_URL' || data[i][0] === 'BASE_URL') {
+      baseUrl = String(data[i][1] || '').trim();
+      break;
+    }
+  }
+  
+  if (!baseUrl) {
+    Logger.log('ベースURLが設定されていません');
+    return null;
+  }
+  
+  // 末尾スラッシュを調整
+  baseUrl = baseUrl.replace(/\/$/, '');
+  var path = pageUrl.startsWith('/') ? pageUrl : '/' + pageUrl;
+  
+  return baseUrl + path;
+}
+
+/**
+ * titleタグを抽出
+ */
+function extractTitle(html) {
+  var match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].trim());
+  }
+  return null;
+}
+
+/**
+ * メタディスクリプションを抽出
+ */
+function extractMetaDescription(html) {
+  // name="description" パターン
+  var match = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["'][^>]*>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].trim());
+  }
+  
+  // content が先に来るパターン
+  match = html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']description["'][^>]*>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].trim());
+  }
+  
+  return null;
+}
+
+/**
+ * H1タグを抽出
+ */
+function extractH1(html) {
+  var match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  if (match && match[1]) {
+    return decodeHtmlEntities(match[1].trim());
+  }
+  
+  // タグ内にspanなどがある場合
+  match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  if (match && match[1]) {
+    var text = match[1].replace(/<[^>]+>/g, '').trim();
+    return decodeHtmlEntities(text);
+  }
+  
+  return null;
+}
+
+/**
+ * H2タグのリストを抽出
+ */
+function extractH2List(html) {
+  var h2List = [];
+  var regex = /<h2[^>]*>([\s\S]*?)<\/h2>/gi;
+  var match;
+  
+  while ((match = regex.exec(html)) !== null) {
+    var text = match[1].replace(/<[^>]+>/g, '').trim();
+    if (text) {
+      h2List.push(decodeHtmlEntities(text));
+    }
+  }
+  
+  return h2List;
+}
+
+/**
+ * 本文の文字数を推定
+ */
+function estimateWordCount(html) {
+  // bodyタグ内のテキストを抽出
+  var bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (!bodyMatch) return 0;
+  
+  var bodyHtml = bodyMatch[1];
+  
+  // script, style, navなどを除去
+  bodyHtml = bodyHtml.replace(/<script[\s\S]*?<\/script>/gi, '');
+  bodyHtml = bodyHtml.replace(/<style[\s\S]*?<\/style>/gi, '');
+  bodyHtml = bodyHtml.replace(/<nav[\s\S]*?<\/nav>/gi, '');
+  bodyHtml = bodyHtml.replace(/<header[\s\S]*?<\/header>/gi, '');
+  bodyHtml = bodyHtml.replace(/<footer[\s\S]*?<\/footer>/gi, '');
+  
+  // HTMLタグを除去
+  var text = bodyHtml.replace(/<[^>]+>/g, ' ');
+  
+  // 空白を正規化
+  text = text.replace(/\s+/g, '');
+  
+  return text.length;
+}
+
+/**
+ * 画像数をカウント
+ */
+function countImages(html) {
+  var matches = html.match(/<img[^>]+>/gi);
+  return matches ? matches.length : 0;
+}
+
+/**
+ * FAQスキーマの有無を検出
+ */
+function detectFAQSchema(html) {
+  return html.includes('FAQPage') || 
+         html.includes('Question') || 
+         html.includes('faq') ||
+         html.includes('よくある質問');
+}
+
+/**
+ * HTMLエンティティをデコード
+ */
+function decodeHtmlEntities(text) {
+  if (!text) return text;
+  
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
+/**
+ * ページ構造をキャッシュ付きで取得
+ * 統合データシートに保存して再利用
+ */
+function getPageStructureCached(pageUrl) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('統合データ');
+  
+  if (!sheet) {
+    return fetchPageStructure(pageUrl);
+  }
+  
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  
+  var urlIdx = headers.indexOf('page_url');
+  var titleIdx = headers.indexOf('page_title');
+  var h1Idx = headers.indexOf('h1_tag');
+  var metaDescIdx = headers.indexOf('meta_description');
+  var h2ListIdx = headers.indexOf('h2_list');
+  var lastFetchIdx = headers.indexOf('structure_fetched_at');
+  
+  // 該当行を検索
+  var targetRow = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeUrlPath(data[i][urlIdx]) === normalizeUrlPath(pageUrl)) {
+      targetRow = i;
+      break;
+    }
+  }
+  
+  if (targetRow === -1) {
+    return fetchPageStructure(pageUrl);
+  }
+  
+  // キャッシュが7日以内なら再利用
+  var lastFetch = lastFetchIdx >= 0 ? data[targetRow][lastFetchIdx] : null;
+  var cacheValid = false;
+  
+  if (lastFetch) {
+    var fetchDate = new Date(lastFetch);
+    var now = new Date();
+    var diffDays = (now - fetchDate) / (1000 * 60 * 60 * 24);
+    cacheValid = diffDays < 7;
+  }
+  
+  // キャッシュが有効で、H1が存在する場合は再利用
+  if (cacheValid && h1Idx >= 0 && data[targetRow][h1Idx]) {
+    return {
+      success: true,
+      url: pageUrl,
+      title: titleIdx >= 0 ? data[targetRow][titleIdx] : null,
+      h1: h1Idx >= 0 ? data[targetRow][h1Idx] : null,
+      metaDescription: metaDescIdx >= 0 ? data[targetRow][metaDescIdx] : null,
+      h2List: h2ListIdx >= 0 ? parseH2List(data[targetRow][h2ListIdx]) : [],
+      fromCache: true
+    };
+  }
+  
+  // キャッシュがない or 古い場合は取得して保存
+  var structure = fetchPageStructure(pageUrl);
+  
+  if (structure.success) {
+    savePageStructure(sheet, headers, targetRow, structure);
+  }
+  
+  return structure;
+}
+
+/**
+ * H2リストをパース
+ */
+function parseH2List(h2String) {
+  if (!h2String) return [];
+  if (Array.isArray(h2String)) return h2String;
+  return String(h2String).split('\n').filter(function(s) { return s.trim(); });
+}
+
+/**
+ * ページ構造をシートに保存
+ */
+function savePageStructure(sheet, headers, rowIndex, structure) {
+  var h1Idx = headers.indexOf('h1_tag');
+  var metaDescIdx = headers.indexOf('meta_description');
+  var h2ListIdx = headers.indexOf('h2_list');
+  var wordCountIdx = headers.indexOf('word_count');
+  var lastFetchIdx = headers.indexOf('structure_fetched_at');
+  
+  // 列がなければ追加
+  var lastCol = headers.length;
+  
+  if (h1Idx === -1) {
+    h1Idx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('h1_tag');
+    lastCol++;
+  }
+  
+  if (metaDescIdx === -1) {
+    metaDescIdx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('meta_description');
+    lastCol++;
+  }
+  
+  if (h2ListIdx === -1) {
+    h2ListIdx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('h2_list');
+    lastCol++;
+  }
+  
+  if (wordCountIdx === -1) {
+    wordCountIdx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('word_count');
+    lastCol++;
+  }
+  
+  if (lastFetchIdx === -1) {
+    lastFetchIdx = lastCol;
+    sheet.getRange(1, lastCol + 1).setValue('structure_fetched_at');
+    lastCol++;
+  }
+  
+  // データを保存
+  var row = rowIndex + 1; // 1-indexed
+  
+  if (structure.h1) {
+    sheet.getRange(row, h1Idx + 1).setValue(structure.h1);
+  }
+  if (structure.metaDescription) {
+    sheet.getRange(row, metaDescIdx + 1).setValue(structure.metaDescription);
+  }
+  if (structure.h2List && structure.h2List.length > 0) {
+    sheet.getRange(row, h2ListIdx + 1).setValue(structure.h2List.join('\n'));
+  }
+  if (structure.wordCount) {
+    sheet.getRange(row, wordCountIdx + 1).setValue(structure.wordCount);
+  }
+  sheet.getRange(row, lastFetchIdx + 1).setValue(new Date());
+  
+  Logger.log('ページ構造を保存しました: 行' + row);
+}
+
+/**
+ * テスト: ページ構造取得
+ */
+function testFetchPageStructure() {
+  var testUrl = '/iphonerepair-battery70-danger';
+  
+  Logger.log('=== ページ構造取得テスト ===');
+  
+  var structure = fetchPageStructure(testUrl);
+  
+  if (structure.success) {
+    Logger.log('タイトル: ' + structure.title);
+    Logger.log('H1: ' + structure.h1);
+    Logger.log('メタディスクリプション: ' + (structure.metaDescription || '').substring(0, 50) + '...');
+    Logger.log('H2数: ' + structure.h2List.length);
+    structure.h2List.forEach(function(h2, i) {
+      Logger.log('  H2-' + (i+1) + ': ' + h2);
+    });
+    Logger.log('推定文字数: ' + structure.wordCount);
+    Logger.log('画像数: ' + structure.hasImages);
+  } else {
+    Logger.log('エラー: ' + structure.error);
+  }
+  
+  Logger.log('=== テスト完了 ===');
+}
+
+// ============================================
+// コンテンツ生成機能
+// ============================================
+
+/**
+ * 提案されたセクションのコンテンツを生成
+ * @param {string} pageUrl - 対象ページURL
+ * @param {string} sectionTitle - セクションタイトル
+ * @param {string} sectionDetails - セクション詳細（箇条書き）
+ * @return {Object} 生成結果
+ */
+function generateSectionContent(pageUrl, sectionTitle, sectionDetails) {
+  Logger.log('=== コンテンツ生成開始 ===');
+  Logger.log('ページ: ' + pageUrl);
+  Logger.log('セクション: ' + sectionTitle);
+  
+  try {
+    // サイト情報を取得
+    var siteInfo = getSiteInfoFromSettings();
+    
+    // ページ構造を取得（エラーでも続行）
+    var pageStructure = null;
+    try {
+      pageStructure = getPageStructureCached(pageUrl);
+    } catch (e) {
+      Logger.log('ページ構造取得スキップ: ' + e.message);
+    }
+    
+    // 現在の日付
+    var today = new Date();
+    var currentYear = today.getFullYear();
+    var currentDate = Utilities.formatDate(today, 'Asia/Tokyo', 'yyyy年MM月dd日');
+    
+    // システムプロンプト
+    var systemPrompt = 'あなたはSEOに強いWebライターです。\n\n' +
+      '【重要：現在の日付】\n' +
+      '今日は' + currentDate + 'です。年号は' + currentYear + '年を使用してください。\n\n' +
+      '【サイト情報】\n' +
+      '- サイト名: ' + (siteInfo.siteName || '') + '\n' +
+      '- サイトタイプ: ' + (siteInfo.siteType || '') + '\n' +
+      '- ジャンル: ' + (siteInfo.siteGenre || '') + '\n\n' +
+      '【コンテンツ作成ルール】\n' +
+      '1. Markdown形式で出力\n' +
+      '2. 500〜1000文字程度\n' +
+      '3. H2見出しから始める\n' +
+      '4. 読者に価値のある具体的な情報を含める\n' +
+      '5. 箇条書きと文章をバランスよく使う\n' +
+      '6. SEOを意識したキーワード配置\n' +
+      '7. 読者の疑問に答える内容\n\n' +
+      '【出力形式】\n' +
+      '- H2見出しから開始\n' +
+      '- 必要に応じてH3を使用\n' +
+      '- 重要ポイントは太字（**テキスト**）\n' +
+      '- リストは「- 」で記述';
+    
+    // ページコンテキスト
+    var pageContext = '';
+    if (pageStructure && pageStructure.success) {
+      pageContext = '\n【対象ページ情報】\n' +
+        '- URL: ' + pageUrl + '\n' +
+        '- タイトル: ' + (pageStructure.title || '不明') + '\n' +
+        '- H1: ' + (pageStructure.h1 || '不明') + '\n';
+    }
+    
+    // ユーザープロンプト
+    var userPrompt = '以下のセクションのコンテンツを作成してください。' +
+      pageContext + '\n' +
+      '【作成するセクション】\n' +
+      sectionTitle + '\n\n' +
+      '【含めるべき内容】\n' +
+      sectionDetails + '\n\n' +
+      '【注意事項】\n' +
+      '- 上記の「含めるべき内容」を網羅してください\n' +
+      '- 具体的な数値やデータがあると説得力が増します\n' +
+      '- 読者がすぐに実践できる情報を心がけてください\n\n' +
+      'それでは、Markdown形式でコンテンツを作成してください：';
+    
+    // Claude API呼び出し
+    Logger.log('Claude API呼び出し開始...');
+    var content = callClaudeAPI(userPrompt, systemPrompt);
+    Logger.log('Claude API呼び出し成功');
+    
+    // 下書きシートに保存
+    var savedRow = saveContentDraft(pageUrl, sectionTitle, content);
+    
+    Logger.log('=== コンテンツ生成完了 ===');
+    
+    return {
+      success: true,
+      content: content,
+      savedRow: savedRow,
+      pageUrl: pageUrl,
+      sectionTitle: sectionTitle
+    };
+    
+  } catch (error) {
+    Logger.log('コンテンツ生成エラー: ' + error.message);
+    Logger.log('エラースタック: ' + error.stack);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+/**
+ * コンテンツ生成用システムプロンプト
+ */
+function buildContentGenerationSystemPrompt(siteInfo, pageStructure) {
+  var today = new Date();
+  var currentYear = today.getFullYear();
+  var currentDate = Utilities.formatDate(today, 'Asia/Tokyo', 'yyyy年MM月dd日');
+  
+  var existingH2 = '';
+  if (pageStructure && pageStructure.h2List && pageStructure.h2List.length > 0) {
+    existingH2 = '\n\n【既存のH2見出し】\n' + pageStructure.h2List.join('\n');
+  }
+  
+  return `あなたはSEOに強いWebライターです。
+
+【重要：現在の日付】
+今日は${currentDate}です。年号は${currentYear}年を使用してください。
+
+【サイト情報】
+- サイト名: ${siteInfo.siteName || ''}
+- サイトタイプ: ${siteInfo.siteType || ''}
+- ジャンル: ${siteInfo.siteGenre || ''}
+${existingH2}
+
+【コンテンツ作成ルール】
+1. Markdown形式で出力
+2. 500〜1000文字程度
+3. H2見出しから始める
+4. 読者に価値のある具体的な情報を含める
+5. 箇条書きと文章をバランスよく使う
+6. 既存コンテンツとトーンを合わせる
+7. SEOを意識したキーワード配置
+8. 読者の疑問に答える内容
+
+【出力形式】
+- H2見出しから開始
+- 必要に応じてH3を使用
+- 重要ポイントは太字（**テキスト**）
+- リストは「- 」で記述`;
+}
+
+/**
+ * コンテンツ生成用ユーザープロンプト
+ */
+function buildContentGenerationUserPrompt(pageUrl, sectionTitle, sectionDetails, pageData, pageStructure) {
+  var pageContext = '';
+  
+  if (pageStructure && pageStructure.success) {
+    pageContext = `
+【対象ページ情報】
+- URL: ${pageUrl}
+- タイトル: ${pageStructure.title || '不明'}
+- H1: ${pageStructure.h1 || '不明'}
+`;
+  }
+  
+  var keywordInfo = '';
+  if (pageData && pageData.target_keyword) {
+    keywordInfo = `\n【ターゲットキーワード】\n${pageData.target_keyword}`;
+  }
+  
+  return `以下のセクションのコンテンツを作成してください。
+${pageContext}${keywordInfo}
+
+【作成するセクション】
+${sectionTitle}
+
+【含めるべき内容】
+${sectionDetails}
+
+【注意事項】
+- 上記の「含めるべき内容」を網羅してください
+- 具体的な数値やデータがあると説得力が増します
+- 読者がすぐに実践できる情報を心がけてください
+
+それでは、Markdown形式でコンテンツを作成してください：`;
+}
+
+/**
+ * コンテンツを下書きシートに保存
+ */
+function saveContentDraft(pageUrl, sectionTitle, content) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('コンテンツ下書き');
+  
+  // シートがなければ作成
+  if (!sheet) {
+    sheet = ss.insertSheet('コンテンツ下書き');
+    sheet.appendRow([
+      'draft_id',
+      'page_url', 
+      'section_title', 
+      'content', 
+      'status',
+      'created_at',
+      'used_at',
+      'notes'
+    ]);
+    
+    // ヘッダー行の書式設定
+    sheet.getRange(1, 1, 1, 8).setFontWeight('bold').setBackground('#4a90d9').setFontColor('#ffffff');
+    sheet.setFrozenRows(1);
+    
+    // 列幅設定
+    sheet.setColumnWidth(1, 100);  // draft_id
+    sheet.setColumnWidth(2, 250);  // page_url
+    sheet.setColumnWidth(3, 200);  // section_title
+    sheet.setColumnWidth(4, 500);  // content
+    sheet.setColumnWidth(5, 80);   // status
+    sheet.setColumnWidth(6, 150);  // created_at
+    sheet.setColumnWidth(7, 150);  // used_at
+    sheet.setColumnWidth(8, 200);  // notes
+  }
+  
+  // draft_id生成
+  var now = new Date();
+  var draftId = 'DRAFT-' + Utilities.formatDate(now, 'Asia/Tokyo', 'yyyyMMdd-HHmmss');
+  
+  // データ追加
+  var newRow = [
+    draftId,
+    pageUrl,
+    sectionTitle,
+    content,
+    '下書き',
+    now,
+    '',
+    ''
+  ];
+  
+  sheet.appendRow(newRow);
+  
+  var lastRow = sheet.getLastRow();
+  Logger.log('下書き保存完了: 行' + lastRow + ', ID=' + draftId);
+  
+  return lastRow;
+}
+
+/**
+ * 提案テキストにコンテンツ生成ボタンを追加（各セクション直後）
+ * @param {string} suggestion - AI提案テキスト
+ * @param {string} pageUrl - ページURL
+ * @return {string} ボタン付き提案テキスト
+ */
+function addContentGenerationButtons(suggestion, pageUrl) {
+  // 「追加すべきコンテンツ」セクションを検出
+  var sections = parseContentSuggestions(suggestion);
+  
+  Logger.log('検出されたセクション数: ' + sections.length);
+  
+  if (sections.length === 0) {
+    return suggestion;
+  }
+  
+  // 各セクションの後にボタンを挿入
+  var modifiedSuggestion = suggestion;
+  
+  // 逆順で処理（後ろから挿入することで位置がズレない）
+  for (var i = sections.length - 1; i >= 0; i--) {
+    var section = sections[i];
+    Logger.log('セクション' + (i + 1) + ': ' + section.title);
+    
+    var buttonHtml = '\n<button class="generate-content-btn" ' +
+                     'data-page-url="' + escapeHtml(pageUrl) + '" ' +
+                     'data-section-title="' + escapeHtml(section.title) + '" ' +
+                     'data-section-details="' + escapeHtml(section.details) + '">' +
+                     '📝 このコンテンツを作成</button>\n';
+    
+    // セクションの終了位置を見つけて挿入
+    if (section.endIndex > 0) {
+      modifiedSuggestion = modifiedSuggestion.substring(0, section.endIndex) + 
+                           buttonHtml + 
+                           modifiedSuggestion.substring(section.endIndex);
+    }
+  }
+  
+  return modifiedSuggestion;
+}
+
+/**
+ * 提案から追加コンテンツセクションを解析
+ */
+function parseContentSuggestions(suggestion) {
+  var sections = [];
+  
+  // 「追加すべきコンテンツ」の位置を検出
+  var addContentStart = suggestion.search(/追加すべきコンテンツ/i);
+  
+  if (addContentStart === -1) {
+    Logger.log('「追加すべきコンテンツ」セクションが見つかりません');
+    return sections;
+  }
+  
+  var addContentSection = suggestion.substring(addContentStart);
+  Logger.log('追加コンテンツセクション検出');
+  
+  // ### で始まるサブセクションを抽出
+  var lines = addContentSection.split('\n');
+  var currentTitle = '';
+  var currentDetails = [];
+  var currentStartIndex = -1;
+  var absoluteIndex = addContentStart;
+  
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var trimmedLine = line.trim();
+    
+    // ### で始まる見出しを検出（または①②③などの番号付き）
+    var isHeading = trimmedLine.match(/^###\s+/) || trimmedLine.match(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/);
+    
+    if (isHeading) {
+      // 前のセクションを保存
+      if (currentTitle && currentDetails.length > 0) {
+        sections.push({
+          title: currentTitle,
+          details: currentDetails.join('\n'),
+          endIndex: absoluteIndex
+        });
+      }
+      // 新しいセクション開始
+      currentTitle = trimmedLine.replace(/^###\s+/, '').replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').trim();
+      currentDetails = [];
+      currentStartIndex = absoluteIndex;
+    }
+    // 次の ## が来たら終了（追加すべきコンテンツセクション終了）
+    else if (trimmedLine.match(/^##\s+/) && currentTitle) {
+      // 前のセクションを保存して終了
+      if (currentDetails.length > 0) {
+        sections.push({
+          title: currentTitle,
+          details: currentDetails.join('\n'),
+          endIndex: absoluteIndex
+        });
+      }
+      break;
+    }
+    // 詳細行を追加（箇条書きの行）
+    else if (currentTitle && trimmedLine && (trimmedLine.startsWith('-') || trimmedLine.startsWith('・') || trimmedLine.match(/^\d+\./))) {
+      currentDetails.push(trimmedLine);
+    }
+    
+    absoluteIndex += line.length + 1; // +1 for newline
+  }
+  
+  // 最後のセクションを保存
+  if (currentTitle && currentDetails.length > 0) {
+    sections.push({
+      title: currentTitle,
+      details: currentDetails.join('\n'),
+      endIndex: absoluteIndex
+    });
+  }
+  
+  Logger.log('解析完了: ' + sections.length + 'セクション');
+  
+  return sections;
+}
+
+/**
+ * HTMLエスケープ
+ */
+function escapeHtml(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * テスト: コンテンツ生成
+ */
+function testGenerateSectionContent() {
+  var testPageUrl = '/purchase-ipad-refurbished-apple';
+  var testSectionTitle = '実体験レビューセクション';
+  var testDetails = '- 実際の購入体験談\n- 開封時の写真・レビュー\n- 新品との比較画像';
+  
+  Logger.log('=== コンテンツ生成テスト ===');
+  
+  var result = generateSectionContent(testPageUrl, testSectionTitle, testDetails);
+  
+  if (result.success) {
+    Logger.log('生成成功！');
+    Logger.log('保存行: ' + result.savedRow);
+    Logger.log('コンテンツ（先頭500文字）:\n' + result.content.substring(0, 500));
+  } else {
+    Logger.log('生成失敗: ' + result.error);
+  }
+  
+  Logger.log('=== テスト完了 ===');
 }

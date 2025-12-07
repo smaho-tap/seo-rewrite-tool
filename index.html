@@ -214,6 +214,32 @@
       border: 1px solid #EF5350;
     }
     
+    /* コンテンツ生成ボタン */
+    .generate-content-btn {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 14px;
+      margin: 10px 0;
+      transition: all 0.3s ease;
+      display: inline-block;
+    }
+    
+    .generate-content-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    
+    .generate-content-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    
     /* レスポンシブ */
     @media (max-width: 768px) {
       #app {
@@ -316,6 +342,47 @@
       }
     });
     
+    // コンテンツ生成ボタンのイベント処理
+    document.addEventListener('click', function(e) {
+      if (e.target.classList.contains('generate-content-btn')) {
+        var btn = e.target;
+        var pageUrl = btn.getAttribute('data-page-url');
+        var sectionTitle = btn.getAttribute('data-section-title');
+        var sectionDetails = btn.getAttribute('data-section-details');
+        
+        // ボタンを無効化
+        btn.disabled = true;
+        btn.textContent = '⏳ 生成中...';
+        
+        // コンテンツ生成リクエストを送信
+        var requestData = {
+          pageUrl: pageUrl,
+          sectionTitle: sectionTitle,
+          sectionDetails: sectionDetails
+        };
+        
+        var message = '__GENERATE_CONTENT__' + JSON.stringify(requestData);
+        
+        // ローディング表示
+        showLoading();
+        
+        // メッセージ送信
+        google.script.run
+          .withSuccessHandler(function(response) {
+            hideLoading();
+            displayAIMessage(response);
+            btn.textContent = '✅ 生成完了';
+          })
+          .withFailureHandler(function(error) {
+            hideLoading();
+            displayErrorMessage('エラー: ' + error.message);
+            btn.disabled = false;
+            btn.textContent = '📝 このコンテンツを作成';
+          })
+          .handleChatMessage(message);
+      }
+    });
+    
     function sendMessage() {
       const input = document.getElementById('user-input');
       const message = input.value.trim();
@@ -408,10 +475,18 @@
     }
     
     function formatMessage(text) {
-      // 改行を<br>に変換
-      text = escapeHtml(text);
-      text = text.replace(/\n/g, '<br>');
-      return text;
+      // HTMLタグを許可（ボタン用）
+      // ただしscriptタグは除外
+      text = text.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+      
+      // 改行を<br>に変換（ただしHTMLタグ内は除く）
+      var parts = text.split(/(<[^>]+>)/);
+      for (var i = 0; i < parts.length; i++) {
+        if (!parts[i].startsWith('<')) {
+          parts[i] = escapeHtml(parts[i]).replace(/\n/g, '<br>');
+        }
+      }
+      return parts.join('');
     }
     
     // 初期化時にスクロール

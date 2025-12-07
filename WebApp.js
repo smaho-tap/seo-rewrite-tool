@@ -26,7 +26,36 @@ function handleChatMessage(userMessage) {
     if (!userMessage || userMessage.trim() === '') {
       return 'メッセージが空です';
     }
-    
+    // ★コンテンツ生成リクエストの処理
+    if (userMessage.indexOf('__GENERATE_CONTENT__') === 0) {
+      Logger.log('コンテンツ生成リクエスト検出');
+      try {
+        var jsonPart = userMessage.replace('__GENERATE_CONTENT__', '');
+        var params = JSON.parse(jsonPart);
+        
+        var result = generateSectionContent(
+          params.pageUrl,
+          params.sectionTitle,
+          params.sectionDetails
+        );
+        
+        if (result.success) {
+          var response = '## ✅ コンテンツを生成しました\n\n';
+          response += '**セクション:** ' + params.sectionTitle + '\n\n';
+          response += '---\n\n';
+          response += result.content;
+          response += '\n\n---\n';
+          response += '📋 「コンテンツ下書き」シートに保存しました（行: ' + result.savedRow + '）\n';
+          response += '💡 内容を確認・編集してからWordPressに貼り付けてください';
+          return response;
+        } else {
+          return '❌ コンテンツ生成に失敗しました: ' + result.error;
+        }
+      } catch (e) {
+        Logger.log('コンテンツ生成エラー: ' + e.message);
+        return '❌ コンテンツ生成でエラーが発生しました: ' + e.message;
+      }
+    }
     // ========================================
     // 優先度0: 競合分析リクエスト（Day 15追加）
     // ========================================
@@ -98,11 +127,40 @@ function handleChatMessage(userMessage) {
           var page = topPages[i];
           response += (i + 1) + '. ' + page.url + '\n';
           response += '   総合スコア: ' + page.totalScore + '点\n';
-          response += '   (機会損失: ' + page.opportunityScore + ' / パフォーマンス: ' + page.performanceScore + ' / ビジネス: ' + page.businessImpactScore + ')\n\n';
+          response += '   (機会損失: ' + page.opportunityScore + ' / パフォーマンス: ' + page.performanceScore + ' / ビジネス: ' + page.businessImpactScore + ')\n';
+          
+          // ★冷却期間中のタスクがある場合は警告表示
+          if (page.hasCoolingTasks && page.coolingTasks && page.coolingTasks.length > 0) {
+            response += '   ⚠️ 冷却中: ';
+            var coolingInfo = page.coolingTasks.map(function(t) {
+              return t.taskType + '(残り' + t.remainingDays + '日)';
+            }).join(', ');
+            response += coolingInfo + '\n';
+            
+            // 提案可能なタスクも表示
+            if (page.availableTasks && page.availableTasks.length > 0) {
+              response += '   ✅ 提案可能: ' + page.availableTasks.join(', ') + '\n';
+            }
+          }
+          
+          response += '\n';
         }
         
         response += '---\n\n';
         response += '【1位ページの詳細リライト提案】\n\n';
+        
+        // 1位ページの冷却情報を追加
+        if (topPages[0].hasCoolingTasks && topPages[0].coolingTasks && topPages[0].coolingTasks.length > 0) {
+          response += '⚠️ **注意: このページには冷却期間中のタスクがあります**\n';
+          topPages[0].coolingTasks.forEach(function(t) {
+            var endDateStr = '';
+            if (t.endDate) {
+              endDateStr = Utilities.formatDate(new Date(t.endDate), 'Asia/Tokyo', 'yyyy/MM/dd');
+            }
+            response += '- ' + t.taskType + ': ' + endDateStr + 'まで（残り' + t.remainingDays + '日）\n';
+          });
+          response += '\n以下の提案のうち、冷却中のタスクについては様子見を推奨します。\n\n';
+        }
         
         if (result.success) {
           response += result.suggestion;
