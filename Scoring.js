@@ -155,22 +155,47 @@ function calculateSiteAverages(data, indexes) {
 
 /**
  * 機会損失スコア（0-100点）
+ * ★修正: gyron_positionを考慮（上位表示中のページは優先度を下げる）
  */
 function calculateOpportunityScore(row, indexes) {
   const position = parseFloat(row[indexes.positionIndex]) || 100;
   const impressions = parseFloat(row[indexes.impressionsIndex]) || 0;
   const ctr = parseFloat(row[indexes.ctrIndex]) || 0;
   
-  // 順位スコア（40%）
+  // gyron_position（ターゲットKW順位）を取得
+  var headers = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('統合データ').getRange(1, 1, 1, 100).getValues()[0];
+  var gyronPositionIndex = headers.indexOf('gyron_position');
+  var gyronPosition = gyronPositionIndex >= 0 ? parseFloat(row[gyronPositionIndex]) || 0 : 0;
+  
+  // ★重要: ターゲットKWで1-3位の場合は優先度を大幅に下げる
+  if (gyronPosition >= 1 && gyronPosition <= 3) {
+    return 10; // 最低スコア（リライト非推奨）
+  }
+  
+  // ★重要: ターゲットKWで4-5位の場合も優先度を下げる
+  if (gyronPosition >= 4 && gyronPosition <= 5) {
+    return 30; // 低スコア（慎重な改善のみ）
+  }
+  
+  // 順位スコア（40%）- 6位以下のページのみ通常計算
   let positionScore = 0;
-  if (position >= 4 && position <= 7) {
-    positionScore = 100;
-  } else if (position >= 8 && position <= 10) {
-    positionScore = 80;
-  } else if (position >= 11 && position <= 20) {
-    positionScore = 50;
-  } else if (position >= 21 && position <= 30) {
-    positionScore = 30;
+  if (gyronPosition >= 6 && gyronPosition <= 10) {
+    positionScore = 100; // TOP5を狙える位置
+  } else if (gyronPosition >= 11 && gyronPosition <= 20) {
+    positionScore = 80; // 改善の余地大
+  } else if (gyronPosition >= 21 && gyronPosition <= 30) {
+    positionScore = 60; // 大幅改善が必要
+  } else if (gyronPosition > 30 || gyronPosition === 0) {
+    // gyron_positionがない場合はavg_positionで判定
+    if (position >= 4 && position <= 7) {
+      positionScore = 100;
+    } else if (position >= 8 && position <= 10) {
+      positionScore = 80;
+    } else if (position >= 11 && position <= 20) {
+      positionScore = 50;
+    } else if (position >= 21 && position <= 30) {
+      positionScore = 30;
+    }
   }
   
   // 表示回数スコア（30%）
@@ -704,62 +729,108 @@ function getSuggestionFormat(gyronPosition) {
 }
 
 /**
- * ユーザープロンプト構築
- * ★v2.2: page_title追加、ターゲットKW追加、順位別警告・制約を追加
+ * 提案プロンプトを生成（WordPress連携版）
  */
 function buildSuggestionPrompt(pageData) {
-  // CTRの安全な処理
-  var ctrValue = parseFloat(pageData.avg_ctr) || 0;
-  var ctrPercent = (ctrValue * 100).toFixed(2);
+  var gyronPosition = pageData.gyron_position || pageData.position || 0;
   
-  // ターゲットKW順位を取得
-  var gyronPosition = parseFloat(pageData.gyron_position) || null;
-  var targetKeyword = pageData.target_keyword || '';
+  // WordPressからページ情報を取得
+  var wpData = null;
+  try {
+    wpData = getWordPressPageData(pageData.page_url);
+  } catch (e) {
+    Logger.log('WordPress取得スキップ: ' + e.message);
+  }
   
-  // 順位に応じた警告メッセージを取得
-  var positionWarning = getPositionWarning(gyronPosition);
+  // 順位別の警告・制約
+  var positionWarning = '';
+  var positionConstraints = '';
   
-  // 順位に応じた提案形式を取得
-  var suggestionFormat = getSuggestionFormatV2(gyronPosition);
+  if (gyronPosition >= 1 && gyronPosition <= 3) {
+    positionWarning = '⚠️ 重要注意: ターゲットKW「' + (pageData.target_keyword || '') + '」で' + gyronPosition + '位獲得中のため、順位下落リスクを避けて低リスク施策のみ提案します';
+    positionConstraints = '【絶対禁止】タイトル変更、大幅な構成変更\n【推奨】メタディスクリプション最適化、コンテンツ追記、内部リンク追加';
+  } else if (gyronPosition >= 4 && gyronPosition <= 5) {
+    positionWarning = '⚠️ 注意: ' + gyronPosition + '位獲得中のため、慎重な改善を推奨';
+    positionConstraints = '【非推奨】タイトル大幅変更\n【推奨】メタディスクリプション、コンテンツ追記、内部リンク';
+  } else if (gyronPosition >= 6 && gyronPosition <= 10) {
+    positionWarning = '📈 ' + gyronPosition + '位からTOP5を目指す改善を提案';
+    positionConstraints = '【可能】タイトル微調整、メタディスクリプション、コンテンツ強化';
+  } else {
+    positionWarning = '🔧 現在' + gyronPosition + '位のため、積極的な改善が可能';
+    positionConstraints = '【可能】タイトル変更、大幅リライト、構成変更';
+  }
   
-  var prompt = `以下のページのリライト提案をお願いします。
+  // WordPress情報セクションを構築
+  var wpSection = '';
+  var faqInstruction = '';
+  
+  if (wpData && wpData.success) {
+    wpSection = `
+【WordPressから取得した実際のページ情報】
+- メタディスクリプション: ${wpData.metaDescription || '未設定'}
+- 文字数: ${wpData.wordCount}文字
+- H2見出し数: ${wpData.h2List.length}個
+- H2見出し一覧:
+${wpData.h2List.map((h2, i) => '  ' + (i + 1) + '. ' + h2).join('\n')}
+- FAQ有無: ${wpData.hasFaq ? 'あり（' + wpData.faqCount + '個）' : 'なし'}
+- テーブル有無: ${wpData.hasTable ? 'あり' : 'なし'}
+- 画像数: ${wpData.imageCount}枚
+- 内部リンク数: ${wpData.internalLinks.length}本
+- 既存の内部リンク先:
+${wpData.internalLinks.slice(0, 10).map(link => '  - ' + link).join('\n')}
+`;
 
-【ページURL】
-${pageData.page_url}
+    // FAQ指示を設定
+    if (wpData.hasFaq) {
+      faqInstruction = '- このページには既にFAQセクションがあります。新規FAQ追加は提案せず、必要に応じて「追加すべきQ&A」や「改善すべきQ&A」を提案してください。';
+    } else {
+      faqInstruction = '- FAQセクションがないため、ユーザーが検索しそうな質問と回答の追加を検討してください。';
+    }
+  } else {
+    wpSection = `
+【ページ情報】
+- メタディスクリプション: ${pageData.meta_description || '取得できません'}
+`;
+    faqInstruction = '- 必要に応じてFAQセクションの追加を検討してください。';
+  }
+  
+  var prompt = `
+以下のページのリライト提案をしてください。
 
-【現在のタイトル】
-${pageData.page_title || '取得できません'}
-
-【現在のメタディスクリプション】
-${pageData.meta_description || '取得できません'}
-
-【ターゲットキーワード情報】
-- ターゲットKW: ${targetKeyword || '未設定'}
-- ターゲットKW順位: ${gyronPosition ? gyronPosition + '位' : 'N/A'}
-- GSC平均順位: ${pageData.avg_position || 'N/A'}位（全クエリ平均）
 ${positionWarning}
-【現在のパフォーマンス】
-- CTR: ${ctrPercent}%
-- 月間クリック数: ${pageData.total_clicks_30d || 0}回
-- 月間表示回数: ${pageData.total_impressions_30d || 0}回
-- ページビュー: ${pageData.avg_page_views_30d || 0}
+
+【ページ基本情報】
+- URL: ${pageData.page_url}
+- タイトル: ${pageData.page_title || '不明'}
+- ターゲットキーワード: ${pageData.target_keyword || '不明'}
+- Gyron順位: ${gyronPosition}位
+${wpSection}
+【パフォーマンスデータ】
+- 表示回数: ${pageData.impressions || 0}
+- クリック数: ${pageData.clicks || 0}
+- CTR: ${pageData.ctr || 0}%
+- 平均掲載順位: ${pageData.avg_position || '-'}
+- PV: ${pageData.pageviews || 0}
+- 滞在時間: ${pageData.avg_time || 0}秒
 - 直帰率: ${pageData.bounce_rate || 0}%
-- 平均滞在時間: ${pageData.avg_session_duration || 0}秒
 
-【スコア】
-- 機会損失スコア: ${pageData.opportunity_score || 0}/100
-- パフォーマンススコア: ${pageData.performance_score || 0}/100
-- ビジネスインパクトスコア: ${pageData.business_impact_score || 0}/100
-- 総合優先度スコア: ${pageData.total_priority_score || 0}/100
+【順位別の制約】
+${positionConstraints}
 
-【主要検索クエリ（上位5つ）】
-${pageData.top_queries || 'データなし'}
+【提案の注意事項】
+${faqInstruction}
+${wpData && wpData.hasTable ? '- このページには既にテーブルがあります。必要に応じて改善提案をしてください。' : '- 比較表やテーブルの追加を検討してください。'}
+- 内部リンク追加を提案する場合は、サイト内の具体的なページURLを提案してください
+- 既存の内部リンク先と重複しないリンク先を提案してください
 
-このページを改善して検索順位とCTRを向上させたいです。
-上記の順位に応じた警告・制約を必ず遵守して、以下の形式で提案してください：
-
-${suggestionFormat}`;
-
+【出力形式の注意】
+- HTMLタグ（<table>、<tr>、<td>など）は使用しないでください
+- マークダウンのコードブロック（\`\`\`）は使用しないでください
+- テーブルを提案する場合は、内容を箇条書きで説明してください
+- 提案は自然な日本語の文章で記述してください
+`;
+// 出力形式を追加
+  prompt += '\n\n' + getSuggestionFormatV2(gyronPosition);
   return prompt;
 }
 
@@ -1574,7 +1645,7 @@ function addSuggestionButtons(suggestion, pageUrl) {
                      'data-task-content="' + escapeHtmlAttr(section.content) + '" ' +
                      'data-priority="' + section.priority + '">' +
                      '➕ タスクに追加</button>' +
-                     '</div>\n';
+                     '</div>\n\n---\n';
     
     if (section.endIndex > 0 && section.endIndex <= modifiedSuggestion.length) {
       modifiedSuggestion = modifiedSuggestion.substring(0, section.endIndex) + 
@@ -1702,35 +1773,101 @@ function registerTaskFromSuggestion(pageUrl, taskType, taskContent, priority) {
     // シートがなければ作成
     if (!sheet) {
       sheet = ss.insertSheet('タスク管理');
-      sheet.appendRow(['task_id', 'page_url', 'task_type', 'task_content', 'priority', 'status', 'created_at', 'completed_at', 'notes']);
-      sheet.getRange(1, 1, 1, 9).setFontWeight('bold').setBackground('#4a90d9').setFontColor('#ffffff');
+      sheet.appendRow([
+        'task_id', 'page_url', 'page_title', 'task_type', 'task_detail',
+        'source', 'priority_rank', 'expected_effect', 'status',
+        'created_date', 'completed_date', 'actual_change', 'cooling_days', 'notes'
+      ]);
+      sheet.getRange(1, 1, 1, 14).setFontWeight('bold').setBackground('#4a90d9').setFontColor('#ffffff');
       sheet.setFrozenRows(1);
     }
     
     var now = new Date();
-    var dateStr = Utilities.formatDate(now, 'Asia/Tokyo', 'yyyyMMdd');
+    var dateStr = Utilities.formatDate(now, 'Asia/Tokyo', 'yyyyMMdd_HHmmss');
+    var taskId = 'TASK_' + dateStr;
+    
+    // ページタイトルを取得
+    var pageTitle = getPageTitleFromUrl(pageUrl);
+    
+    // 期待効果を種別から推定
+    var expectedEffect = getExpectedEffectFromType(taskType);
     
     var data = sheet.getDataRange().getValues();
-    var todayCount = 0;
-    for (var i = 1; i < data.length; i++) {
-      var taskId = data[i][0] || '';
-      if (taskId.indexOf('TASK-' + dateStr) === 0) todayCount++;
-    }
     
-    var taskId = 'TASK-' + dateStr + '-' + String(todayCount + 1).padStart(3, '0');
-    
-    // 重複チェック
+    // 重複チェック（同じページ・タスク種別で未完了のもの）
     for (var i = 1; i < data.length; i++) {
-      if (data[i][1] === pageUrl && data[i][2] === taskType && data[i][5] !== '完了') {
+      if (data[i][1] === pageUrl && data[i][3] === taskType && data[i][8] !== '完了') {
         return { success: false, error: '同じタスクが既に存在します', existingTaskId: data[i][0] };
       }
     }
     
-    sheet.appendRow([taskId, pageUrl, taskType, taskContent, priority, '未着手', now, '', 'AI提案から登録']);
+    // 新しいタスクを追加
+    sheet.appendRow([
+      taskId,           // task_id
+      pageUrl,          // page_url
+      pageTitle,        // page_title
+      taskType,         // task_type
+      taskContent,      // task_detail
+      'AI提案',         // source
+      priority,         // priority_rank
+      expectedEffect,   // expected_effect
+      '未着手',         // status
+      Utilities.formatDate(now, 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss'), // created_date
+      '',               // completed_date
+      '',               // actual_change
+      '',               // cooling_days
+      ''                // notes
+    ]);
     
     return { success: true, taskId: taskId, row: sheet.getLastRow() };
     
   } catch (error) {
+    Logger.log('タスク登録エラー: ' + error.message);
     return { success: false, error: error.message };
   }
+}
+
+/**
+ * URLからページタイトルを取得
+ */
+function getPageTitleFromUrl(pageUrl) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('統合データ');
+    if (!sheet) return '';
+    
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0];
+    var urlIndex = headers.indexOf('page_url');
+    var titleIndex = headers.indexOf('page_title');
+    
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][urlIndex] === pageUrl) {
+        return data[i][titleIndex] || '';
+      }
+    }
+    return '';
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
+ * タスク種別から期待効果を推定
+ */
+function getExpectedEffectFromType(taskType) {
+  var effectMap = {
+    'タイトル変更': 'CTR改善',
+    'メタディスクリプション': 'CTR改善',
+    'メタディスクリプション改善': 'CTR改善',
+    'H2追加': '検索順位向上',
+    '本文追加': '滞在時間改善',
+    'Q&A追加': '検索順位向上',
+    'FAQ追加': '検索順位向上',
+    '画像追加': '滞在時間改善',
+    '内部リンク追加': '回遊率向上',
+    '動画追加': '滞在時間改善'
+  };
+  
+  return effectMap[taskType] || '';
 }
