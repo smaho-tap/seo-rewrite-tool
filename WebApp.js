@@ -315,11 +315,18 @@ function analyzeIntent(userMessage) {
   // 優先度1: リライト効果測定クエリ
   // =============================================
   
-  var hasRewriteKeyword = message.includes('リライト') && 
-                           (message.includes('効果') || message.includes('測定') || 
-                            message.includes('比較') || message.includes('前後'));
+  // ★「リライト」だけでなく「設置」「変更」「改善」も効果測定対象に
+  var hasActionKeyword = message.includes('リライト') || 
+                         message.includes('設置') || 
+                         message.includes('変更') || 
+                         message.includes('改善');
   
-  if (hasRewriteKeyword) {
+  var hasEffectKeyword = message.includes('効果') || message.includes('測定') || 
+                         message.includes('比較') || message.includes('前後') ||
+                         message.includes('滞在時間') || message.includes('離脱率') ||
+                         message.includes('直帰率');
+  
+  if (hasActionKeyword && hasEffectKeyword) {
     var rewriteDate = extractRewriteDate(userMessage);
     var comparisonDays = extractComparisonDays(userMessage);
     var pageUrl = extractPageUrl(userMessage);
@@ -1042,6 +1049,19 @@ function testDateRange() {
  * @return {boolean} 競合分析リクエストかどうか
  */
 function isCompetitorAnalysisRequest(message) {
+  // ★効果測定キーワードが含まれている場合は競合分析ではない
+  var effectMeasurementKeywords = [
+    '設置', '変更', '改善', '前後', '効果', '測定',
+    '滞在時間', '離脱率', '直帰率', 'PV', 'ページビュー'
+  ];
+  
+  for (var i = 0; i < effectMeasurementKeywords.length; i++) {
+    if (message.includes(effectMeasurementKeywords[i])) {
+      Logger.log('効果測定キーワード検出: ' + effectMeasurementKeywords[i] + ' → 競合分析ではない');
+      return false;
+    }
+  }
+  
   var competitorKeywords = [
     '競合', '上位サイト', '比較', 'ライバル', 
     '1位', '2位', '3位', 'トップ', '検索結果',

@@ -526,9 +526,30 @@ function fetchIntegratedDataForDateRange(startDate, endDate, pageUrl) {
   try {
     Logger.log('=== 期間指定統合データ取得開始 ===');
     
-    // GA4とGSCデータを並行取得
-    var ga4Data = fetchGA4DataForDateRange(startDate, endDate, pageUrl);
-    var gscData = fetchGSCDataForDateRange(startDate, endDate, pageUrl);
+    var ga4Data = [];
+    var gscData = [];
+    
+    // GA4データ取得（エラー時は空配列で続行）
+    try {
+      ga4Data = fetchGA4DataForDateRange(startDate, endDate, pageUrl);
+    } catch (ga4Error) {
+      Logger.log('⚠️ GA4データ取得エラー（GSCデータのみで続行）: ' + ga4Error.message);
+      ga4Data = [];
+    }
+    
+    // GSCデータ取得（エラー時は空配列で続行）
+    try {
+      gscData = fetchGSCDataForDateRange(startDate, endDate, pageUrl);
+    } catch (gscError) {
+      Logger.log('⚠️ GSCデータ取得エラー（GA4データのみで続行）: ' + gscError.message);
+      gscData = [];
+    }
+    
+    // 両方失敗した場合
+    if (ga4Data.length === 0 && gscData.length === 0) {
+      Logger.log('⚠️ GA4・GSC両方のデータが取得できませんでした');
+      return [];
+    }
     
     // URL単位でデータ統合
     var integratedData = {};
@@ -562,12 +583,12 @@ function fetchIntegratedDataForDateRange(startDate, endDate, pageUrl) {
       return integratedData[url];
     });
     
-    Logger.log('統合データ作成完了: ' + result.length + '件');
+    Logger.log('統合データ作成完了: ' + result.length + '件（GA4: ' + ga4Data.length + '件, GSC: ' + gscData.length + '件）');
     return result;
     
   } catch (error) {
     Logger.log('期間指定統合データ取得エラー: ' + error.message);
-    throw error;
+    return []; // エラー時も空配列を返す（例外を投げない）
   }
 }
 
@@ -1146,4 +1167,17 @@ function testUpdatePublishDates() {
     Logger.log('✅ 正常完了');
     Logger.log(`更新件数: ${result.updatedCount}`);
   }
+}
+
+function fixGA4PropertyId() {
+  const propertyId = 'properties/388689745';
+  
+  PropertiesService.getScriptProperties()
+    .setProperty('GA4_PROPERTY_ID', propertyId);
+  
+  Logger.log('✅ GA4_PROPERTY_IDを修正しました: ' + propertyId);
+  
+  // 確認
+  const saved = PropertiesService.getScriptProperties().getProperty('GA4_PROPERTY_ID');
+  Logger.log('確認: ' + saved);
 }
