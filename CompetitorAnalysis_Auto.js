@@ -1117,8 +1117,6 @@ function retryMissingDAsWithCount() {
  * @returns {void}
  */
 function weeklyDARetry() {
-  // 投稿日同期（3ヶ月未満記事除外用）
-  syncPublishDates();
   const startTime = new Date();
   const SAFE_EXECUTION_TIME = 240;  // 4分（AIOサマリー用に1分確保）
   const MAX_DA_RETRY = 15;

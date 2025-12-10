@@ -721,26 +721,3 @@ function importGyronCSVsOnly() {
   console.log(`総KW数: ${mergedData.length}件`);
   console.log(`所要時間: ${duration.toFixed(1)}秒`);
 }
-
-function checkSearchVolumeSheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('検索ボリューム_RAW');
-  
-  if (!sheet) {
-    Logger.log('検索ボリューム_RAWシートが見つかりません');
-    return;
-  }
-  
-  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  Logger.log('=== 検索ボリューム_RAWのヘッダー ===');
-  headers.forEach(function(header, index) {
-    Logger.log((index + 1) + '列目: ' + header);
-  });
-  
-  // サンプルデータ（最初の5行）
-  var data = sheet.getRange(2, 1, 5, sheet.getLastColumn()).getValues();
-  Logger.log('=== サンプルデータ（5件） ===');
-  data.forEach(function(row, i) {
-    Logger.log((i + 1) + ': ' + row.join(' | '));
-  });
-}

@@ -26,36 +26,78 @@ function handleChatMessage(userMessage) {
     if (!userMessage || userMessage.trim() === '') {
       return 'メッセージが空です';
     }
-    // ★コンテンツ生成リクエストの処理
-    if (userMessage.indexOf('__GENERATE_CONTENT__') === 0) {
-      Logger.log('コンテンツ生成リクエスト検出');
+
+    // ★アウトライン生成リクエスト（フェーズ1追加）
+    if (userMessage.indexOf('__GENERATE_OUTLINE__') === 0) {
+      Logger.log('アウトライン生成リクエスト検出');
       try {
-        var jsonPart = userMessage.replace('__GENERATE_CONTENT__', '');
+        var jsonPart = userMessage.replace('__GENERATE_OUTLINE__', '');
         var params = JSON.parse(jsonPart);
         
-        var result = generateSectionContent(
-          params.pageUrl,
-          params.sectionTitle,
-          params.sectionDetails
-        );
+        var result = generateOutline(params.pageUrl, params.suggestionTitle, params.suggestionType, params.suggestionContent);
         
         if (result.success) {
-          var response = '## ✅ コンテンツを生成しました\n\n';
-          response += '**セクション:** ' + params.sectionTitle + '\n\n';
-          response += '---\n\n';
-          response += result.content;
-          response += '\n\n---\n';
-          response += '📋 「コンテンツ下書き」シートに保存しました（行: ' + result.savedRow + '）\n';
-          response += '💡 内容を確認・編集してからWordPressに貼り付けてください';
+          var response = '## ✅ アウトラインを生成しました\n\n';
+          response += '**ページ**: ' + params.pageUrl + '\n';
+          response += '**種別**: ' + params.suggestionType + '\n\n---\n\n';
+          response += result.outline;
+          response += '\n\n---\n💡 このアウトラインを参考に、コンテンツを作成してください。';
           return response;
         } else {
-          return '❌ コンテンツ生成に失敗しました: ' + result.error;
+          return '❌ アウトライン生成に失敗しました: ' + result.error;
         }
       } catch (e) {
-        Logger.log('コンテンツ生成エラー: ' + e.message);
-        return '❌ コンテンツ生成でエラーが発生しました: ' + e.message;
+        return '❌ アウトライン生成でエラー: ' + e.message;
       }
     }
+    
+    // ★タスク追加リクエスト（フェーズ1追加）
+    if (userMessage.indexOf('__ADD_TASK__') === 0) {
+      Logger.log('タスク追加リクエスト検出');
+      try {
+        var jsonPart = userMessage.replace('__ADD_TASK__', '');
+        var params = JSON.parse(jsonPart);
+        
+        var result = registerTaskFromSuggestion(params.pageUrl, params.taskType, params.taskContent, params.priority || 3);
+        
+        if (result.success) {
+          var priorityEmoji = ['', '🥇', '🥈', '🥉', '⭐', '☆'][params.priority] || '⭐';
+          var response = '## ✅ タスクを登録しました\n\n';
+          response += '| 項目 | 内容 |\n|------|------|\n';
+          response += '| タスクID | ' + result.taskId + ' |\n';
+          response += '| ページ | ' + params.pageUrl + ' |\n';
+          response += '| 種別 | ' + params.taskType + ' |\n';
+          response += '| 優先度 | ' + priorityEmoji + ' 優先度' + params.priority + ' |\n';
+          response += '| ステータス | 未着手 |\n\n';
+          response += '📋 「タスク管理」シートで確認・編集できます。';
+          return response;
+        } else {
+          if (result.existingTaskId) {
+            return '⚠️ 同じタスクが既に登録されています（ID: ' + result.existingTaskId + '）';
+          }
+          return '❌ タスク登録に失敗: ' + result.error;
+        }
+      } catch (e) {
+        return '❌ タスク登録でエラー: ' + e.message;
+      }
+    }
+    // ★詳細表示リクエスト（フェーズ1追加）
+    if (userMessage.indexOf('__VIEW_DETAIL__') === 0) {
+      Logger.log('詳細表示リクエスト検出');
+      try {
+        var pageUrl = userMessage.replace('__VIEW_DETAIL__', '').trim();
+        var result = generateRewriteSuggestions(pageUrl);
+        
+        if (result.success) {
+          return '## 📋 ' + pageUrl + ' の詳細リライト提案\n\n' + result.suggestion;
+        } else {
+          return '❌ 詳細取得に失敗しました: ' + result.suggestion;
+        }
+      } catch (e) {
+        return '❌ 詳細取得でエラー: ' + e.message;
+      }
+    }
+    
     // ========================================
     // 優先度0: 競合分析リクエスト（Day 15追加）
     // ========================================
@@ -64,20 +106,12 @@ function handleChatMessage(userMessage) {
       return handleCompetitorAnalysisChat(userMessage, null);
     }
 
-     // ========================================
+    // ========================================
     // 優先度0.5: AIO分析リクエスト（Day 16追加）
     // ========================================
     if (isAIOAnalysisRequest(userMessage)) {
       Logger.log('AIO分析リクエストを検出');
       return handleAIOAnalysisChat(userMessage);
-    }
-    
-    // ========================================
-    // 優先度0.6: GSCズレ分析リクエスト（Day 22追加）
-    // ========================================
-    if (isGSCGapAnalysisRequest(userMessage)) {
-      Logger.log('GSCズレ分析リクエストを検出');
-      return handleGSCGapAnalysisFromChat(userMessage);
     }
     
     // 意図分析
@@ -99,13 +133,7 @@ function handleChatMessage(userMessage) {
         var result = generateRewriteSuggestions(pageUrl);
         
         if (result.success) {
-          var suggestionResponse = result.suggestion;
-          // 推奨KW情報を追加
-          var kwInfo = getRecommendedKeywordForChat(pageUrl);
-          if (kwInfo) {
-            suggestionResponse += kwInfo;
-          }
-          return suggestionResponse;
+          return result.suggestion;
         } else {
           return 'ページが見つかりませんでした: ' + pageUrl;
         }
@@ -128,47 +156,14 @@ function handleChatMessage(userMessage) {
           response += (i + 1) + '. ' + page.url + '\n';
           response += '   総合スコア: ' + page.totalScore + '点\n';
           response += '   (機会損失: ' + page.opportunityScore + ' / パフォーマンス: ' + page.performanceScore + ' / ビジネス: ' + page.businessImpactScore + ')\n';
-          
-          // ★冷却期間中のタスクがある場合は警告表示
-          if (page.hasCoolingTasks && page.coolingTasks && page.coolingTasks.length > 0) {
-            response += '   ⚠️ 冷却中: ';
-            var coolingInfo = page.coolingTasks.map(function(t) {
-              return t.taskType + '(残り' + t.remainingDays + '日)';
-            }).join(', ');
-            response += coolingInfo + '\n';
-            
-            // 提案可能なタスクも表示
-            if (page.availableTasks && page.availableTasks.length > 0) {
-              response += '   ✅ 提案可能: ' + page.availableTasks.join(', ') + '\n';
-            }
-          }
-          
-          response += '\n';
+          response += '<button class="view-detail-btn" data-page-url="' + escapeHtmlAttr(page.url) + '">📋 詳細を見る</button>\n\n';
         }
         
         response += '---\n\n';
         response += '【1位ページの詳細リライト提案】\n\n';
         
-        // 1位ページの冷却情報を追加
-        if (topPages[0].hasCoolingTasks && topPages[0].coolingTasks && topPages[0].coolingTasks.length > 0) {
-          response += '⚠️ **注意: このページには冷却期間中のタスクがあります**\n';
-          topPages[0].coolingTasks.forEach(function(t) {
-            var endDateStr = '';
-            if (t.endDate) {
-              endDateStr = Utilities.formatDate(new Date(t.endDate), 'Asia/Tokyo', 'yyyy/MM/dd');
-            }
-            response += '- ' + t.taskType + ': ' + endDateStr + 'まで（残り' + t.remainingDays + '日）\n';
-          });
-          response += '\n以下の提案のうち、冷却中のタスクについては様子見を推奨します。\n\n';
-        }
-        
         if (result.success) {
           response += result.suggestion;
-          // 1位ページの推奨KW情報を追加
-          var kwInfo = getRecommendedKeywordForChat(topPages[0].url);
-          if (kwInfo) {
-            response += kwInfo;
-          }
         } else {
           response += '提案生成中にエラーが発生しました。';
         }
@@ -494,97 +489,15 @@ function extractComparisonDays(userMessage) {
 }
 
 /**
- * ページURLを抽出（改善版 - 3パターン対応）
- * 対応形式:
- * 1. 完全URL: https://smaho-tap.com/iphonerepair-battery-replacement-makes-sense
- * 2. パス形式: /iphonerepair-battery-replacement-makes-sense
- * 3. スラッグ形式: iphonerepair-battery-replacement-makes-sense
+ * ページURLを抽出
  */
 function extractPageUrl(userMessage) {
-  Logger.log('=== extractPageUrl開始 ===');
-  Logger.log('入力メッセージ: ' + userMessage);
-  
-  var extractedPath = null;
-  
-  // =============================================
-  // パターン1: 完全URL（https://smaho-tap.com/xxx）
-  // =============================================
-  var fullUrlMatch = userMessage.match(/https?:\/\/[^\/\s]+\/([a-zA-Z0-9\-_\/]+)/);
-  if (fullUrlMatch) {
-    extractedPath = '/' + fullUrlMatch[1].replace(/\/$/, ''); // 末尾スラッシュ除去
-    Logger.log('完全URLから抽出: ' + extractedPath);
-    return extractedPath;
+  // 「/xxx」形式のURLを抽出
+  var match = userMessage.match(/\/[a-zA-Z0-9\-_\/]+/);
+  if (match) {
+    return match[0];
   }
   
-  // =============================================
-  // パターン2: パス形式（/xxx）
-  // =============================================
-  var pathMatch = userMessage.match(/\/([a-zA-Z0-9\-_]+(?:\/[a-zA-Z0-9\-_]+)*)/);
-  if (pathMatch) {
-    extractedPath = '/' + pathMatch[1].replace(/\/$/, '');
-    Logger.log('パス形式から抽出: ' + extractedPath);
-    return extractedPath;
-  }
-  
-  // =============================================
-  // パターン3: スラッグ形式（/なし）→ 統合データから検索
-  // =============================================
-  // 英字で始まり、英数字・ハイフン・アンダースコアで構成される6文字以上の文字列
-  var slugMatch = userMessage.match(/\b([a-zA-Z][a-zA-Z0-9\-_]{5,})\b/);
-  if (slugMatch) {
-    var potentialSlug = slugMatch[1].toLowerCase();
-    Logger.log('スラッグ候補: ' + potentialSlug);
-    
-    // 除外ワード（一般的な単語を誤検出しないように）
-    var excludeWords = ['リライト', '提案して', 'ください', 'おねがい', 'analysis', 'please', 'rewrite'];
-    var isExcluded = excludeWords.some(function(word) {
-      return potentialSlug.indexOf(word.toLowerCase()) !== -1;
-    });
-    
-    if (!isExcluded) {
-      // 統合データから該当するURLを検索
-      try {
-        var ss = SpreadsheetApp.getActiveSpreadsheet();
-        var sheet = ss.getSheetByName('統合データ');
-        
-        if (sheet) {
-          var data = sheet.getDataRange().getValues();
-          var headers = data[0];
-          var urlIdx = headers.indexOf('page_url');
-          
-          if (urlIdx !== -1) {
-            // 完全一致を優先
-            for (var i = 1; i < data.length; i++) {
-              var rowUrl = (data[i][urlIdx] || '').toString();
-              var normalizedRowUrl = rowUrl.toLowerCase().replace(/^\//, '').replace(/\/$/, '');
-              
-              if (normalizedRowUrl === potentialSlug) {
-                extractedPath = rowUrl.startsWith('/') ? rowUrl : '/' + rowUrl;
-                Logger.log('スラッグ完全一致: ' + potentialSlug + ' → ' + extractedPath);
-                return extractedPath;
-              }
-            }
-            
-            // 部分一致（スラッグがURLに含まれる場合）
-            for (var i = 1; i < data.length; i++) {
-              var rowUrl = (data[i][urlIdx] || '').toString();
-              var normalizedRowUrl = rowUrl.toLowerCase();
-              
-              if (normalizedRowUrl.indexOf(potentialSlug) !== -1) {
-                extractedPath = rowUrl.startsWith('/') ? rowUrl : '/' + rowUrl;
-                Logger.log('スラッグ部分一致: ' + potentialSlug + ' → ' + extractedPath);
-                return extractedPath;
-              }
-            }
-          }
-        }
-      } catch (error) {
-        Logger.log('URL検索エラー: ' + error.message);
-      }
-    }
-  }
-  
-  Logger.log('URL抽出失敗: null');
   return null;
 }
 
@@ -1527,880 +1440,4 @@ function testWebAppCompetitorIntegration() {
   } catch (error) {
     Logger.log('❌ エラー: ' + error.message);
   }
-}
-
-// ============================================
-// doPost() に追加する分岐処理
-// ============================================
-
-/*
-既存のdoPost関数内に以下の分岐を追加してください:
-
-function doPost(e) {
-  try {
-    const data = JSON.parse(e.postData.contents);
-    const action = data.action;
-    
-    // ... 既存の分岐 ...
-    
-    // タスク管理API（新規追加）
-    if (action === 'registerTask') {
-      return handleRegisterTask(data);
-    }
-    
-    if (action === 'completeTask') {
-      return handleCompleteTask(data);
-    }
-    
-    if (action === 'getPageTasks') {
-      return handleGetPageTasks(data);
-    }
-    
-    if (action === 'getPendingTasks') {
-      return handleGetPendingTasks(data);
-    }
-    
-    if (action === 'updateTaskStatus') {
-      return handleUpdateTaskStatus(data);
-    }
-    
-    if (action === 'checkCooling') {
-      return handleCheckCooling(data);
-    }
-    
-    // ... 既存の処理 ...
-  }
-}
-*/
-
-
-// ============================================
-// タスク登録ハンドラー
-// ============================================
-
-/**
- * タスク登録リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleRegisterTask(data) {
-  try {
-    let result;
-    
-    if (data.source === 'AI提案') {
-      result = createTaskFromAISuggestion(
-        data.pageUrl,
-        data.pageTitle,
-        data.taskType,
-        data.taskDetail,
-        data.priorityRank || 0
-      );
-    } else {
-      result = createCustomTask(
-        data.pageUrl,
-        data.pageTitle,
-        data.taskType,
-        data.taskDetail,
-        data.notes || ''
-      );
-    }
-    
-    return ContentService.createTextOutput(JSON.stringify(result))
-      .setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-/**
- * タスク完了リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleCompleteTask(data) {
-  try {
-    const result = completeTask(data.taskId, data.actualChange);
-    
-    return ContentService.createTextOutput(JSON.stringify(result))
-      .setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-/**
- * ページ別タスク取得リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleGetPageTasks(data) {
-  try {
-    const tasks = getTasksByPage(data.pageUrl);
-    const coolingStatus = checkCoolingStatus(data.pageUrl);
-    
-    return ContentService.createTextOutput(JSON.stringify({
-      success: true,
-      tasks: tasks,
-      coolingStatus: coolingStatus
-    })).setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-/**
- * 未完了タスク取得リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleGetPendingTasks(data) {
-  try {
-    const tasks = getPendingTasks(data.status);
-    const summary = getTaskSummary();
-    
-    return ContentService.createTextOutput(JSON.stringify({
-      success: true,
-      tasks: tasks,
-      summary: summary
-    })).setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-/**
- * ステータス更新リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleUpdateTaskStatus(data) {
-  try {
-    const result = updateTaskStatus(data.taskId, data.newStatus);
-    
-    return ContentService.createTextOutput(JSON.stringify(result))
-      .setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-/**
- * 冷却状態チェックリクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleCheckCooling(data) {
-  try {
-    const coolingStatus = checkCoolingStatus(data.pageUrl, data.taskType);
-    
-    return ContentService.createTextOutput(JSON.stringify({
-      success: true,
-      coolingStatus: coolingStatus
-    })).setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-// ============================================
-// チャットからのタスク登録連携
-// ============================================
-
-/**
- * AIチャットの提案をタスク登録可能な形式に変換
- * handleChatMessage()から呼び出し
- * 
- * @param {string} pageUrl - ページURL
- * @param {string} pageTitle - ページタイトル
- * @param {string} aiResponse - Claude APIからの応答
- * @return {Object} タスク登録用データ
- */
-function parseAIResponseForTasks(pageUrl, pageTitle, aiResponse) {
-  // AI応答から提案を抽出するパターン
-  const suggestions = [];
-  
-  // タイトル提案を検出
-  const titleMatch = aiResponse.match(/タイトル[変更修正案：:].{0,10}[「『](.+?)[」』]/);
-  if (titleMatch) {
-    suggestions.push({
-      taskType: 'タイトル変更',
-      taskDetail: titleMatch[1],
-      priorityRank: 1
-    });
-  }
-  
-  // H2提案を検出
-  const h2Matches = aiResponse.matchAll(/H2[追加：:].{0,10}[「『](.+?)[」』]/g);
-  let h2Rank = 2;
-  for (const match of h2Matches) {
-    suggestions.push({
-      taskType: 'H2追加',
-      taskDetail: match[1],
-      priorityRank: h2Rank++
-    });
-  }
-  
-  // Q&A提案を検出
-  const qaMatch = aiResponse.match(/Q&A[追加：:]|よくある質問/);
-  if (qaMatch) {
-    suggestions.push({
-      taskType: 'Q&A追加',
-      taskDetail: 'FAQ構造化データを含むQ&Aセクション追加',
-      priorityRank: 3
-    });
-  }
-  
-  // 本文追加を検出
-  const contentMatch = aiResponse.match(/本文[追加修正：:]|コンテンツ[追加：:]/);
-  if (contentMatch) {
-    suggestions.push({
-      taskType: '本文追加',
-      taskDetail: 'コンテンツ拡充',
-      priorityRank: 4
-    });
-  }
-  
-  // 冷却期間でフィルタリング
-  const filtered = filterSuggestionsByCooling(pageUrl, suggestions);
-  
-  return {
-    pageUrl: pageUrl,
-    pageTitle: pageTitle,
-    suggestions: filtered.available,
-    excludedByCooling: filtered.excluded
-  };
-}
-
-
-/**
- * チャット応答にタスク登録ボタン情報を追加
- * @param {string} response - 元の応答
- * @param {Object} taskData - parseAIResponseForTasks()の結果
- * @return {string} 拡張された応答
- */
-function addTaskButtonsToResponse(response, taskData) {
-  if (!taskData.suggestions || taskData.suggestions.length === 0) {
-    return response;
-  }
-  
-  // 応答の最後にタスク登録セクションを追加
-  let taskSection = '\n\n---\n### 📋 タスク登録\n';
-  taskSection += '以下の提案をタスクとして登録できます：\n\n';
-  
-  taskData.suggestions.forEach((suggestion, index) => {
-    taskSection += `**${index + 1}. ${suggestion.taskType}**\n`;
-    taskSection += `${suggestion.taskDetail}\n`;
-    // フロントエンドでボタンを生成するためのマーカー
-    taskSection += `<!--TASK_BUTTON:${JSON.stringify({
-      pageUrl: taskData.pageUrl,
-      pageTitle: taskData.pageTitle,
-      taskType: suggestion.taskType,
-      taskDetail: suggestion.taskDetail,
-      priorityRank: suggestion.priorityRank
-    })}-->\n\n`;
-  });
-  
-  // 冷却中の項目があれば表示
-  if (taskData.excludedByCooling && taskData.excludedByCooling.length > 0) {
-    taskSection += generateCoolingMessage({ excluded: taskData.excludedByCooling });
-  }
-  
-  // カスタムタスク追加のマーカー
-  taskSection += `\n➕ **カスタムタスクを追加**\n`;
-  taskSection += `<!--CUSTOM_TASK_BUTTON:${JSON.stringify({
-    pageUrl: taskData.pageUrl,
-    pageTitle: taskData.pageTitle
-  })}-->\n`;
-  
-  return response + taskSection;
-}
-
-
-// ============================================
-// 週次分析との連携
-// ============================================
-
-/**
- * 週次分析で冷却中ページを除外
- * Scoring.gsの getTopPriorityPages() から呼び出し
- * 
- * @param {Array} pages - ページ一覧
- * @return {Array} 冷却中でないページ一覧
- */
-function excludeCoolingPagesFromAnalysis(pages) {
-  return pages.filter(page => {
-    const lastCompleted = getLastCompletedDate(page.url || page.page_url);
-    if (!lastCompleted) return true;
-    
-    const today = new Date();
-    const daysSince = Math.floor((today - lastCompleted) / (1000 * 60 * 60 * 24));
-    
-    // 最低30日は除外（タスク種別に関係なく）
-    return daysSince >= 30;
-  });
-}
-
-
-/**
- * 冷却情報を含めた優先ページ一覧を取得
- * @param {number} limit - 取得件数
- * @return {Array} ページ一覧（冷却情報付き）
- */
-function getTopPriorityPagesWithCooling(limit) {
-  // 既存の関数から優先ページ取得
-  const pages = getTopPriorityPages ? getTopPriorityPages(limit * 2) : [];
-  
-  // 冷却情報を付加
-  const pagesWithCooling = pages.map(page => {
-    const url = page.url || page.page_url;
-    const coolingStatus = checkCoolingStatus(url);
-    
-    return {
-      ...page,
-      coolingStatus: coolingStatus,
-      isCooling: coolingStatus.isCooling
-    };
-  });
-  
-  // 冷却中でないものを優先、冷却中は後ろに
-  const notCooling = pagesWithCooling.filter(p => !p.isCooling);
-  const cooling = pagesWithCooling.filter(p => p.isCooling);
-  
-  return [...notCooling, ...cooling].slice(0, limit);
-}
-
-/**
- * WebApp.gs に追加するコード
- * doPost() 関数とタスク管理API
- * 追加日: 2025年12月3日
- */
-
-// ============================================
-// doPost() 関数（WebApp.gsに追加）
-// ============================================
-
-/**
- * POSTリクエストを処理
- * @param {Object} e - リクエストイベント
- * @return {TextOutput} JSON応答
- */
-function doPost(e) {
-  try {
-    // リクエストデータを解析
-    const data = JSON.parse(e.postData.contents);
-    const action = data.action;
-    
-    Logger.log('doPost受信: action=' + action);
-    
-    // ============================================
-    // チャットメッセージ処理
-    // ============================================
-    if (action === 'chat') {
-      const response = handleChatMessage(data.message);
-      return ContentService.createTextOutput(JSON.stringify({
-        success: true,
-        response: response
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // ============================================
-    // タスク管理API
-    // ============================================
-    
-    // タスク登録
-    if (action === 'registerTask') {
-      return handleRegisterTask(data);
-    }
-    
-    // タスク完了
-    if (action === 'completeTask') {
-      return handleCompleteTask(data);
-    }
-    
-    // ページ別タスク取得
-    if (action === 'getPageTasks') {
-      return handleGetPageTasks(data);
-    }
-    
-    // 未完了タスク取得
-    if (action === 'getPendingTasks') {
-      return handleGetPendingTasks(data);
-    }
-    
-    // ステータス更新
-    if (action === 'updateTaskStatus') {
-      return handleUpdateTaskStatus(data);
-    }
-    
-    // 冷却状態チェック
-    if (action === 'checkCooling') {
-      return handleCheckCooling(data);
-    }
-    
-    // ============================================
-    // WordPress連携API
-    // ============================================
-    
-    // WordPress投稿情報取得
-    if (action === 'getWordPressPost') {
-      return handleGetWordPressPost(data);
-    }
-    
-    // WordPress更新適用
-    if (action === 'applyToWordPress') {
-      return handleApplyToWordPress(data);
-    }
-    
-    // ============================================
-    // データ取得API
-    // ============================================
-    
-    // 優先ページ取得
-    if (action === 'getTopPages') {
-      const pages = getTopPriorityPagesWithCooling(data.limit || 10);
-      return ContentService.createTextOutput(JSON.stringify({
-        success: true,
-        pages: pages
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // タスクサマリー取得
-    if (action === 'getTaskSummary') {
-      const summary = getTaskSummary();
-      return ContentService.createTextOutput(JSON.stringify({
-        success: true,
-        summary: summary
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // ============================================
-    // 不明なアクション
-    // ============================================
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: '不明なアクション: ' + action
-    })).setMimeType(ContentService.MimeType.JSON);
-    
-  } catch (error) {
-    Logger.log('doPostエラー: ' + error.message);
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-// ============================================
-// WordPress連携ハンドラー
-// ============================================
-
-/**
- * WordPress投稿情報取得リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleGetWordPressPost(data) {
-  try {
-    const result = getPostInfoForRewrite(data.pageUrl);
-    
-    return ContentService.createTextOutput(JSON.stringify(result))
-      .setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-/**
- * WordPress更新適用リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleApplyToWordPress(data) {
-  try {
-    const result = applyRewriteToWordPress(data.taskId, data.changes);
-    
-    return ContentService.createTextOutput(JSON.stringify(result))
-      .setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-/**
- * WebApp.gs に追加するコード
- * doPost() 関数とタスク管理API
- * 追加日: 2025年12月3日
- */
-
-// ============================================
-// doPost() 関数（WebApp.gsに追加）
-// ============================================
-
-/**
- * POSTリクエストを処理
- * @param {Object} e - リクエストイベント
- * @return {TextOutput} JSON応答
- */
-function doPost(e) {
-  try {
-    // リクエストデータを解析
-    const data = JSON.parse(e.postData.contents);
-    const action = data.action;
-    
-    Logger.log('doPost受信: action=' + action);
-    
-    // ============================================
-    // チャットメッセージ処理
-    // ============================================
-    if (action === 'chat') {
-      const response = handleChatMessage(data.message);
-      return ContentService.createTextOutput(JSON.stringify({
-        success: true,
-        response: response
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // ============================================
-    // タスク管理API
-    // ============================================
-    
-    // タスク登録
-    if (action === 'registerTask') {
-      return handleRegisterTask(data);
-    }
-    
-    // タスク完了
-    if (action === 'completeTask') {
-      return handleCompleteTask(data);
-    }
-    
-    // ページ別タスク取得
-    if (action === 'getPageTasks') {
-      return handleGetPageTasks(data);
-    }
-    
-    // 未完了タスク取得
-    if (action === 'getPendingTasks') {
-      return handleGetPendingTasks(data);
-    }
-    
-    // ステータス更新
-    if (action === 'updateTaskStatus') {
-      return handleUpdateTaskStatus(data);
-    }
-    
-    // 冷却状態チェック
-    if (action === 'checkCooling') {
-      return handleCheckCooling(data);
-    }
-    
-    // ============================================
-    // WordPress連携API
-    // ============================================
-    
-    // WordPress投稿情報取得
-    if (action === 'getWordPressPost') {
-      return handleGetWordPressPost(data);
-    }
-    
-    // WordPress更新適用
-    if (action === 'applyToWordPress') {
-      return handleApplyToWordPress(data);
-    }
-    
-    // ============================================
-    // データ取得API
-    // ============================================
-    
-    // 優先ページ取得
-    if (action === 'getTopPages') {
-      const pages = getTopPriorityPagesWithCooling(data.limit || 10);
-      return ContentService.createTextOutput(JSON.stringify({
-        success: true,
-        pages: pages
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // タスクサマリー取得
-    if (action === 'getTaskSummary') {
-      const summary = getTaskSummary();
-      return ContentService.createTextOutput(JSON.stringify({
-        success: true,
-        summary: summary
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // ============================================
-    // 不明なアクション
-    // ============================================
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: '不明なアクション: ' + action
-    })).setMimeType(ContentService.MimeType.JSON);
-    
-  } catch (error) {
-    Logger.log('doPostエラー: ' + error.message);
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-// ============================================
-// WordPress連携ハンドラー
-// ============================================
-
-/**
- * WordPress投稿情報取得リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleGetWordPressPost(data) {
-  try {
-    const result = getPostInfoForRewrite(data.pageUrl);
-    
-    return ContentService.createTextOutput(JSON.stringify(result))
-      .setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-
-/**
- * WordPress更新適用リクエストを処理
- * @param {Object} data - リクエストデータ
- * @return {TextOutput} JSON応答
- */
-function handleApplyToWordPress(data) {
-  try {
-    const result = applyRewriteToWordPress(data.taskId, data.changes);
-    
-    return ContentService.createTextOutput(JSON.stringify(result))
-      .setMimeType(ContentService.MimeType.JSON);
-      
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({
-      success: false,
-      error: error.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-// ============================================
-// GSCズレ分析チャット連携（Day 22追加）
-// ============================================
-
-/**
- * GSCズレ分析リクエストかどうかを判定
- * @param {string} message - ユーザーメッセージ
- * @return {boolean} GSCズレ分析リクエストかどうか
- */
-function isGSCGapAnalysisRequest(message) {
-  var lowerMessage = message.toLowerCase();
-  
-  var keywords = [
-    'gscとターゲット',
-    'gsc ターゲット',
-    'gscズレ',
-    'gsc ズレ',
-    'ターゲットkwのズレ',
-    'ターゲットキーワードのズレ',
-    'クエリとターゲット',
-    '実クエリとターゲット',
-    'gsc分析',
-    'キーワードのズレ',
-    'gscと登録kw',
-    '検索クエリとターゲット'
-  ];
-  
-  for (var i = 0; i < keywords.length; i++) {
-    if (lowerMessage.indexOf(keywords[i]) !== -1) {
-      return true;
-    }
-  }
-  
-  return false;
-}
-
-/**
- * GSCズレ分析リクエストを処理（チャットから呼び出し）
- * @param {string} message - ユーザーメッセージ
- * @return {string} レスポンス
- */
-function handleGSCGapAnalysisFromChat(message) {
-  try {
-    // URLを抽出
-    var urlMatch = message.match(/\/[\w\-\/]+/);
-    
-    if (!urlMatch) {
-      // URLが指定されていない場合、優先度上位ページを提案
-      return 'GSCズレ分析を行うページURLを指定してください。\n\n' +
-             '**使用例**:\n' +
-             '- 「/insurance/recommend/ のGSCとターゲットKWのズレを教えて」\n' +
-             '- 「/iphone-repair/ のGSC分析して」\n\n' +
-             '💡 **ヒント**: リライト提案と一緒にGSCズレ分析も表示されます。';
-    }
-    
-    var pageUrl = urlMatch[0];
-    Logger.log('GSCズレ分析対象URL: ' + pageUrl);
-    
-    // SuggestionGenerator.gsのgetGSCTargetKWGapForChat関数を呼び出し
-    if (typeof getGSCTargetKWGapForChat === 'function') {
-      var gscGapText = getGSCTargetKWGapForChat(pageUrl);
-      
-      // トレンド分析も追加
-      var trendText = '';
-      if (typeof applyTrendModifier === 'function') {
-        var targetKW = getTargetKeywordForPage(pageUrl);
-        var trendResult = applyTrendModifier(pageUrl, targetKW, 50);
-        
-        if (trendResult.trend) {
-          trendText = '\n\n📈 **順位トレンド（過去4週間）**\n';
-          trendText += 'トレンド: **' + trendResult.trendLabel + '**\n';
-          trendText += trendResult.message + '\n';
-          
-          if (trendResult.weeklyRanks) {
-            var ranks = trendResult.weeklyRanks.map(function(w) {
-              return w.rank || '圏外';
-            }).join(' → ');
-            trendText += '推移: ' + ranks + '\n';
-          }
-        }
-      }
-      
-      return '## 🔍 GSCズレ分析結果\n\n' +
-             '**対象ページ**: ' + pageUrl + '\n' +
-             gscGapText + trendText;
-    } else {
-      return '⚠️ GSCズレ分析機能が利用できません。\n' +
-             'SuggestionGenerator.gsにgetGSCTargetKWGapForChat関数が実装されているか確認してください。';
-    }
-    
-  } catch (error) {
-    Logger.log('GSCズレ分析エラー: ' + error.message);
-    return 'GSCズレ分析中にエラーが発生しました: ' + error.message;
-  }
-}
-
-/**
- * ページのターゲットキーワードを取得（補助関数）
- * @param {string} pageUrl - ページURL
- * @return {string} ターゲットキーワード
- */
-function getTargetKeywordForPage(pageUrl) {
-  try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('統合データ');
-    
-    if (!sheet) return '';
-    
-    var data = sheet.getDataRange().getValues();
-    var headers = data[0];
-    var urlIdx = headers.indexOf('page_url');
-    var kwIdx = headers.indexOf('target_keyword');
-    
-    if (urlIdx === -1 || kwIdx === -1) return '';
-    
-    // URLを正規化
-    var normalizedInput = pageUrl.toLowerCase().replace(/\/$/, '');
-    
-    for (var i = 1; i < data.length; i++) {
-      var rowUrl = (data[i][urlIdx] || '').toString().toLowerCase().replace(/\/$/, '');
-      
-      if (rowUrl === normalizedInput || rowUrl.indexOf(normalizedInput) !== -1 || normalizedInput.indexOf(rowUrl) !== -1) {
-        return data[i][kwIdx] || '';
-      }
-    }
-    
-    return '';
-  } catch (error) {
-    Logger.log('ターゲットKW取得エラー: ' + error.message);
-    return '';
-  }
-}
-
-/**
- * GSCズレ分析のテスト
- */
-function testGSCGapAnalysisChat() {
-  Logger.log('=== GSCズレ分析チャットテスト ===');
-  
-  // テスト1: リクエスト判定
-  var testMessages = [
-    'GSCとターゲットKWのズレを教えて',
-    '/iphone-insurance/ のGSC分析して',
-    'リライト提案して',
-    '競合分析して'
-  ];
-  
-  Logger.log('\n--- リクエスト判定テスト ---');
-  for (var i = 0; i < testMessages.length; i++) {
-    var msg = testMessages[i];
-    var isGSCGap = isGSCGapAnalysisRequest(msg);
-    Logger.log('「' + msg + '」→ GSCズレ分析: ' + isGSCGap);
-  }
-  
-  // テスト2: 実際の分析（統合データの最初のページ）
-  Logger.log('\n--- 分析実行テスト ---');
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('統合データ');
-  
-  if (sheet) {
-    var data = sheet.getDataRange().getValues();
-    var testUrl = data[1][0]; // 最初のページURL
-    
-    Logger.log('テスト対象URL: ' + testUrl);
-    var result = handleGSCGapAnalysisFromChat(testUrl + ' のGSCズレを分析して');
-    Logger.log('結果（先頭500文字）:');
-    Logger.log(result.substring(0, 500));
-  }
-  
-  Logger.log('\n=== テスト完了 ===');
 }

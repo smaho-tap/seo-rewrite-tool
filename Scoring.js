@@ -113,7 +113,7 @@ function calculateScores() {
 function getColumnIndexes(headers) {
   return {
     urlIndex: headers.indexOf('page_url'),
-    positionIndex: headers.indexOf('gyron_position'),
+    positionIndex: headers.indexOf('avg_position'),
     clicksIndex: headers.indexOf('total_clicks_30d'),
     impressionsIndex: headers.indexOf('total_impressions_30d'),
     ctrIndex: headers.indexOf('avg_ctr'),
@@ -161,20 +161,16 @@ function calculateOpportunityScore(row, indexes) {
   const impressions = parseFloat(row[indexes.impressionsIndex]) || 0;
   const ctr = parseFloat(row[indexes.ctrIndex]) || 0;
   
-  // 順位スコア（40%）★Day 22修正: 11-20位を最優先に
+  // 順位スコア（40%）
   let positionScore = 0;
-  if (position >= 1 && position <= 3) {
-    positionScore = 10;   // 現状維持（リスク回避）
-  } else if (position >= 4 && position <= 10) {
-    positionScore = 75;   // TOP3入りを狙える
+  if (position >= 4 && position <= 7) {
+    positionScore = 100;
+  } else if (position >= 8 && position <= 10) {
+    positionScore = 80;
   } else if (position >= 11 && position <= 20) {
-    positionScore = 100;  // ★最優先：1ページ目入り直前
+    positionScore = 50;
   } else if (position >= 21 && position <= 30) {
-    positionScore = 95;   // ★高優先：1ページ目入り射程圏内
-  } else if (position >= 31 && position <= 50) {
-    positionScore = 40;   // 中優先
-  } else {
-    positionScore = 20;   // 低優先
+    positionScore = 30;
   }
   
   // 表示回数スコア（30%）
@@ -314,7 +310,58 @@ function calculateTotalPriorityScore(opportunityScore, performanceScore, busines
   return Math.round(totalScore);
 }
 
-
+/**
+ * 優先度上位ページを取得（フィルター付き）
+ */
+function getTopPriorityPagesFiltered(limit) {
+  limit = limit || 10;
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('統合データ');
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  
+  var urlIndex = headers.indexOf('page_url');
+  var titleIndex = headers.indexOf('page_title');
+  var totalScoreIndex = headers.indexOf('total_priority_score');
+  var opportunityIndex = headers.indexOf('opportunity_score');
+  var performanceIndex = headers.indexOf('performance_score');
+  var businessImpactIndex = headers.indexOf('business_impact_score');
+  var targetKWIndex = headers.indexOf('target_keyword');
+  var gyronPositionIndex = headers.indexOf('gyron_position');
+  
+  var pages = [];
+  
+  for (var i = 1; i < data.length; i++) {
+    var url = String(data[i][urlIndex] || '').trim();
+    var title = String(data[i][titleIndex] || '').trim();
+    var totalScore = parseFloat(data[i][totalScoreIndex]) || 0;
+    var opportunityScore = parseFloat(data[i][opportunityIndex]) || 0;
+    var performanceScore = parseFloat(data[i][performanceIndex]) || 0;
+    var businessImpactScore = parseFloat(data[i][businessImpactIndex]) || 0;
+    var targetKW = targetKWIndex >= 0 ? String(data[i][targetKWIndex] || '').trim() : '';
+    var gyronPosition = gyronPositionIndex >= 0 ? parseFloat(data[i][gyronPositionIndex]) || null : null;
+    
+    if (url && totalScore > 0) {
+      pages.push({
+        url: url,
+        title: title,
+        score: totalScore,
+        totalScore: totalScore,
+        opportunityScore: opportunityScore,
+        performanceScore: performanceScore,
+        businessImpactScore: businessImpactScore,
+        targetKeyword: targetKW,
+        gyronPosition: gyronPosition
+      });
+    }
+  }
+  
+  // スコア降順でソート
+  pages.sort(function(a, b) { return b.score - a.score; });
+  
+  return pages.slice(0, limit);
+}
 
 /**
  * 優先度上位ページを取得
@@ -328,9 +375,6 @@ function getTopPriorityPages(limit = 10) {
   const urlIndex = headers.indexOf('page_url');
   const titleIndex = headers.indexOf('page_title');
   const scoreIndex = headers.indexOf('total_priority_score');
-  const opportunityIndex = headers.indexOf('opportunity_score');
-  const performanceIndex = headers.indexOf('performance_score');
-  const businessImpactIndex = headers.indexOf('business_impact_score');
   const targetKWIndex = headers.indexOf('target_keyword');
   const gyronPositionIndex = headers.indexOf('gyron_position');
   
@@ -340,9 +384,6 @@ function getTopPriorityPages(limit = 10) {
     const url = String(data[i][urlIndex] || '').trim();
     const title = String(data[i][titleIndex] || '').trim();
     const score = parseFloat(data[i][scoreIndex]) || 0;
-    const opportunityScore = opportunityIndex >= 0 ? parseFloat(data[i][opportunityIndex]) || 0 : 0;
-    const performanceScore = performanceIndex >= 0 ? parseFloat(data[i][performanceIndex]) || 0 : 0;
-    const businessImpactScore = businessImpactIndex >= 0 ? parseFloat(data[i][businessImpactIndex]) || 0 : 0;
     const targetKW = targetKWIndex >= 0 ? String(data[i][targetKWIndex] || '').trim() : '';
     const gyronPosition = gyronPositionIndex >= 0 ? parseFloat(data[i][gyronPositionIndex]) || null : null;
     
@@ -350,11 +391,7 @@ function getTopPriorityPages(limit = 10) {
       pages.push({ 
         url, 
         title, 
-        score,
-        totalScore: score,
-        opportunityScore: opportunityScore,
-        performanceScore: performanceScore,
-        businessImpactScore: businessImpactScore,
+        score, 
         rowIndex: i,
         targetKeyword: targetKW,
         gyronPosition: gyronPosition
@@ -384,9 +421,9 @@ function generateRewriteSuggestions(pageUrl) {
     
     // Claude APIで提案生成
     var suggestion = callClaudeForSuggestion(pageData);
-    
-    // ★コンテンツ生成ボタンを追加
-    suggestion = addContentGenerationButtons(suggestion, pageUrl);
+
+    // ★ボタンを追加（フェーズ1追加）
+    suggestion = addSuggestionButtons(suggestion, pageUrl);
     
     Logger.log('=== AI提案生成完了 ===');
     return { success: true, suggestion: suggestion };
@@ -668,7 +705,7 @@ function getSuggestionFormat(gyronPosition) {
 
 /**
  * ユーザープロンプト構築
- * ★v2.4: ページ構造情報（スクレイピング）+ 冷却期間情報を追加
+ * ★v2.2: page_title追加、ターゲットKW追加、順位別警告・制約を追加
  */
 function buildSuggestionPrompt(pageData) {
   // CTRの安全な処理
@@ -683,69 +720,24 @@ function buildSuggestionPrompt(pageData) {
   var positionWarning = getPositionWarning(gyronPosition);
   
   // 順位に応じた提案形式を取得
-  var suggestionFormat = getSuggestionFormat(gyronPosition);
-  
-  // ★ページ構造情報を取得（スクレイピング）
-  var pageStructure = getPageStructureCached(pageData.page_url);
-  var structureInfo = '';
-  
-  if (pageStructure && pageStructure.success) {
-    structureInfo = `
-【現在のページ構造（実測値）】
-- タイトルタグ: ${pageStructure.title || '取得できません'}
-- H1タグ: ${pageStructure.h1 || '取得できません'}
-- メタディスクリプション: ${pageStructure.metaDescription || '取得できません'}
-- 本文文字数: 約${pageStructure.wordCount || 0}文字
-- 画像数: ${pageStructure.hasImages || 0}枚
-- H2見出し数: ${pageStructure.h2List ? pageStructure.h2List.length : 0}個
-`;
-    
-    if (pageStructure.h2List && pageStructure.h2List.length > 0) {
-      structureInfo += '\n【H2見出し一覧】\n';
-      pageStructure.h2List.forEach(function(h2, i) {
-        structureInfo += (i + 1) + '. ' + h2 + '\n';
-      });
-    }
-  } else {
-    structureInfo = '\n【ページ構造】\n※ページ情報を取得できませんでした\n';
-  }
-  
-  // ★冷却期間情報を取得
-  var coolingWarning = '';
-  var coolingStatus = checkCoolingStatus(pageData.page_url);
-  
-  if (coolingStatus && coolingStatus.isCooling && coolingStatus.coolingTasks && coolingStatus.coolingTasks.length > 0) {
-    coolingWarning = '\n【⚠️ 重要：冷却期間中のタスク】\n';
-    coolingWarning += '以下のタスクは最近実施済みのため、提案から除外してください：\n';
-    
-    coolingStatus.coolingTasks.forEach(function(task) {
-      var endDateStr = '';
-      if (task.endDate) {
-        endDateStr = Utilities.formatDate(new Date(task.endDate), 'Asia/Tokyo', 'yyyy/MM/dd');
-      }
-      coolingWarning += '- ' + task.taskType + '（' + endDateStr + 'まで冷却期間、残り' + task.remainingDays + '日）\n';
-    });
-    
-    coolingWarning += '\n上記のタスクについては「最近実施済みのため様子見を推奨」と記載し、';
-    coolingWarning += '代わりに以下のタスクを中心に提案してください：\n';
-    
-    if (coolingStatus.availableTasks && coolingStatus.availableTasks.length > 0) {
-      coolingWarning += '提案可能なタスク: ' + coolingStatus.availableTasks.join(', ') + '\n';
-    } else {
-      coolingWarning += '※現在提案可能なタスクがありません。様子見を推奨してください。\n';
-    }
-  }
+  var suggestionFormat = getSuggestionFormatV2(gyronPosition);
   
   var prompt = `以下のページのリライト提案をお願いします。
 
 【ページURL】
 ${pageData.page_url}
-${structureInfo}
+
+【現在のタイトル】
+${pageData.page_title || '取得できません'}
+
+【現在のメタディスクリプション】
+${pageData.meta_description || '取得できません'}
+
 【ターゲットキーワード情報】
 - ターゲットKW: ${targetKeyword || '未設定'}
 - ターゲットKW順位: ${gyronPosition ? gyronPosition + '位' : 'N/A'}
 - GSC平均順位: ${pageData.avg_position || 'N/A'}位（全クエリ平均）
-${positionWarning}${coolingWarning}
+${positionWarning}
 【現在のパフォーマンス】
 - CTR: ${ctrPercent}%
 - 月間クリック数: ${pageData.total_clicks_30d || 0}回
@@ -764,7 +756,7 @@ ${positionWarning}${coolingWarning}
 ${pageData.top_queries || 'データなし'}
 
 このページを改善して検索順位とCTRを向上させたいです。
-上記の順位に応じた警告・制約、および現在のページ構造を踏まえて、以下の形式で提案してください：
+上記の順位に応じた警告・制約を必ず遵守して、以下の形式で提案してください：
 
 ${suggestionFormat}`;
 
@@ -1485,1944 +1477,106 @@ function testPositionWarnings() {
   
   Logger.log('=== テスト完了 ===');
 }
-
 // ============================================
-// getTopPriorityPages() の修正版
-// ============================================
-
-/**
- * 優先度の高いページを取得（冷却期間考慮版）
- * 既存の関数を置き換えるか、新しい関数として追加
- * 
- * @param {number} limit - 取得件数
- * @param {boolean} includeCooling - 冷却中ページも含めるか（デフォルト: false）
- * @return {Array} ページ一覧
- */
-function getTopPriorityPagesWithCoolingFilter(limit, includeCooling = false) {
-  try {
-    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('統合データ');
-    if (!sheet) return [];
-    
-    const data = sheet.getDataRange().getValues();
-    const headers = data[0];
-    
-    // 必要な列のインデックスを取得
-    const urlCol = headers.indexOf('page_url') !== -1 ? headers.indexOf('page_url') : headers.indexOf('url');
-    const titleCol = headers.indexOf('page_title') !== -1 ? headers.indexOf('page_title') : headers.indexOf('title');
-    const scoreCol = headers.indexOf('total_priority_score');
-    const exclusionCol = headers.indexOf('exclusion_reason');
-    
-    // データを配列に変換
-    let pages = [];
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      
-      // 除外理由がある場合はスキップ
-      if (exclusionCol !== -1 && row[exclusionCol]) {
-        continue;
-      }
-      
-      const pageUrl = row[urlCol];
-      const score = scoreCol !== -1 ? row[scoreCol] : 0;
-      
-      // 冷却状態をチェック
-      const coolingStatus = checkCoolingStatus(pageUrl);
-      
-      // 冷却中ページを除外する場合
-      if (!includeCooling && coolingStatus.isCooling) {
-        continue;
-      }
-      
-      const page = {
-        url: pageUrl,
-        title: titleCol !== -1 ? row[titleCol] : '',
-        score: score,
-        coolingStatus: coolingStatus,
-        isCooling: coolingStatus.isCooling
-      };
-      
-      // 他のスコア情報も追加
-      headers.forEach((header, idx) => {
-        if (!page[header]) {
-          page[header] = row[idx];
-        }
-      });
-      
-      pages.push(page);
-    }
-    
-    // スコア降順でソート
-    pages.sort((a, b) => (b.score || 0) - (a.score || 0));
-    
-    return pages.slice(0, limit);
-    
-  } catch (error) {
-    Logger.log(`優先ページ取得エラー: ${error.message}`);
-    return [];
-  }
-}
-
-
-// ============================================
-// 週次分析での冷却期間レポート
+// フェーズ1追加: 優先度順提案フォーマット
+// 追加日: 2025年12月8日
 // ============================================
 
 /**
- * 冷却中ページのサマリーを生成
- * runWeeklyAnalysis()から呼び出し
- * 
- * @return {Object} サマリー情報
+ * 提案形式を優先度順フォーマットに変更
  */
-function getCoolingPagesSummary() {
-  try {
-    const taskSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('タスク管理');
-    if (!taskSheet) {
-      return { count: 0, pages: [], message: 'タスク管理シートがありません' };
-    }
-    
-    const data = taskSheet.getDataRange().getValues();
-    const headers = data[0];
-    const urlCol = headers.indexOf('page_url');
-    const typeCol = headers.indexOf('task_type');
-    const statusCol = headers.indexOf('status');
-    const completedDateCol = headers.indexOf('completed_date');
-    const coolingDaysCol = headers.indexOf('cooling_days');
-    
-    const today = new Date();
-    const coolingPages = new Map(); // URL -> 冷却情報
-    
-    for (let i = 1; i < data.length; i++) {
-      const status = data[i][statusCol];
-      const completedDate = data[i][completedDateCol];
-      
-      if (status === '完了' && completedDate) {
-        const url = data[i][urlCol];
-        const taskType = data[i][typeCol];
-        const coolingDays = data[i][coolingDaysCol] || 30;
-        
-        const endDate = new Date(completedDate);
-        endDate.setDate(endDate.getDate() + coolingDays);
-        
-        if (today < endDate) {
-          const remainingDays = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
-          
-          if (!coolingPages.has(url)) {
-            coolingPages.set(url, {
-              url: url,
-              tasks: [],
-              maxRemainingDays: 0
-            });
-          }
-          
-          const pageInfo = coolingPages.get(url);
-          pageInfo.tasks.push({
-            taskType: taskType,
-            remainingDays: remainingDays,
-            endDate: endDate
-          });
-          
-          if (remainingDays > pageInfo.maxRemainingDays) {
-            pageInfo.maxRemainingDays = remainingDays;
-          }
-        }
-      }
-    }
-    
-    const coolingList = Array.from(coolingPages.values());
-    
-    // 残り日数でソート
-    coolingList.sort((a, b) => a.maxRemainingDays - b.maxRemainingDays);
-    
-    return {
-      count: coolingList.length,
-      pages: coolingList,
-      nearExpiry: coolingList.filter(p => p.maxRemainingDays <= 7), // 1週間以内に解除
-      longCooling: coolingList.filter(p => p.maxRemainingDays > 60) // 2ヶ月以上残り
-    };
-    
-  } catch (error) {
-    Logger.log(`冷却サマリー取得エラー: ${error.message}`);
-    return { count: 0, pages: [], error: error.message };
-  }
-}
-
-
-/**
- * 週次メールに冷却情報を追加
- * @param {string} emailBody - 既存のメール本文
- * @return {string} 冷却情報を追加したメール本文
- */
-function addCoolingInfoToWeeklyEmail(emailBody) {
-  const coolingSummary = getCoolingPagesSummary();
-  
-  if (coolingSummary.count === 0) {
-    return emailBody;
-  }
-  
-  let coolingSection = '\n\n━━━━━━━━━━━━━━━━━━━━\n';
-  coolingSection += '⏳ 冷却期間中のページ\n';
-  coolingSection += '━━━━━━━━━━━━━━━━━━━━\n\n';
-  
-  coolingSection += `現在 ${coolingSummary.count} ページが冷却期間中です。\n\n`;
-  
-  // もうすぐ解除されるページ
-  if (coolingSummary.nearExpiry.length > 0) {
-    coolingSection += '【もうすぐ解除（1週間以内）】\n';
-    coolingSummary.nearExpiry.forEach(page => {
-      const taskTypes = page.tasks.map(t => t.taskType).join(', ');
-      coolingSection += `• ${page.url}\n`;
-      coolingSection += `  → ${taskTypes}（あと${page.maxRemainingDays}日）\n`;
-    });
-    coolingSection += '\n';
-  }
-  
-  // 長期冷却中のページ（タイトル変更など）
-  if (coolingSummary.longCooling.length > 0) {
-    coolingSection += '【長期冷却中（60日以上）】\n';
-    coolingSummary.longCooling.forEach(page => {
-      const taskTypes = page.tasks.map(t => t.taskType).join(', ');
-      coolingSection += `• ${page.url}\n`;
-      coolingSection += `  → ${taskTypes}（あと${page.maxRemainingDays}日）\n`;
-    });
-    coolingSection += '\n';
-  }
-  
-  return emailBody + coolingSection;
-}
-
-
-// ============================================
-// AI提案生成時の冷却期間フィルタリング
-// ============================================
-
-/**
- * ページに対するAI提案を生成（冷却期間考慮版）
- * SuggestionGenerator.gsから呼び出し
- * 
- * @param {string} pageUrl - ページURL
- * @param {Object} pageData - ページデータ
- * @return {Object} 提案情報（冷却情報含む）
- */
-function generateSuggestionsWithCooling(pageUrl, pageData) {
-  // 全タスク種別の冷却状態を取得
-  const coolingStatus = checkCoolingStatus(pageUrl);
-  
-  // 冷却中でないタスク種別のみを提案対象に
-  const availableTaskTypes = coolingStatus.availableTasks;
-  const excludedTaskTypes = coolingStatus.coolingTasks.map(t => ({
-    taskType: t.taskType,
-    remainingDays: t.remainingDays,
-    endDate: t.endDate
-  }));
-  
-  return {
-    pageUrl: pageUrl,
-    pageData: pageData,
-    availableTaskTypes: availableTaskTypes,
-    excludedTaskTypes: excludedTaskTypes,
-    coolingMessage: excludedTaskTypes.length > 0 
-      ? `※ ${excludedTaskTypes.map(t => `${t.taskType}(あと${t.remainingDays}日)`).join(', ')} は冷却期間中のため除外`
-      : ''
-  };
-}
-
-
-// ============================================
-// リライト提案の優先順位付けロジック
-// ============================================
-
-/**
- * 提案に推奨順位を付与
- * @param {Array} suggestions - 提案リスト
- * @return {Array} 推奨順位付き提案リスト
- */
-function assignPriorityRank(suggestions) {
-  // 効果の優先度でソート
-  const priorityOrder = {
-    'タイトル変更': 1,
-    'メタディスクリプション': 2,
-    'H1変更': 3,
-    'H2追加': 4,
-    'H2変更': 5,
-    'Q&A追加': 6,
-    '本文追加': 7,
-    '画像追加': 8,
-    '動画追加': 9,
-    '内部リンク追加': 10,
-    'その他': 99
-  };
-  
-  // ソート
-  suggestions.sort((a, b) => {
-    const orderA = priorityOrder[a.taskType] || 99;
-    const orderB = priorityOrder[b.taskType] || 99;
-    return orderA - orderB;
-  });
-  
-  // 推奨順位を付与
-  suggestions.forEach((suggestion, index) => {
-    suggestion.priorityRank = index + 1;
-  });
-  
-  return suggestions;
-}
-
-
-// ============================================
-// テスト関数
-// ============================================
-
-/**
- * 冷却期間連携のテスト
- */
-function testCoolingIntegration() {
-  Logger.log('=== 冷却期間連携テスト開始 ===');
-  
-  // 1. 冷却サマリー取得テスト
-  Logger.log('1. 冷却サマリー取得テスト');
-  const summary = getCoolingPagesSummary();
-  Logger.log(`冷却中ページ数: ${summary.count}`);
-  Logger.log(`もうすぐ解除: ${summary.nearExpiry?.length || 0}`);
-  Logger.log(`長期冷却中: ${summary.longCooling?.length || 0}`);
-  
-  // 2. 優先ページ取得テスト（冷却フィルター付き）
-  Logger.log('2. 優先ページ取得テスト');
-  const pagesWithFilter = getTopPriorityPagesWithCoolingFilter(5, false);
-  Logger.log(`冷却除外後: ${pagesWithFilter.length}件`);
-  
-  const pagesWithoutFilter = getTopPriorityPagesWithCoolingFilter(5, true);
-  Logger.log(`冷却含む: ${pagesWithoutFilter.length}件`);
-  
-  // 3. 推奨順位付けテスト
-  Logger.log('3. 推奨順位付けテスト');
-  const testSuggestions = [
-    { taskType: '本文追加', detail: 'テスト1' },
-    { taskType: 'タイトル変更', detail: 'テスト2' },
-    { taskType: 'Q&A追加', detail: 'テスト3' }
-  ];
-  const ranked = assignPriorityRank(testSuggestions);
-  ranked.forEach(s => Logger.log(`${s.priorityRank}. ${s.taskType}`));
-  
-  Logger.log('=== 冷却期間連携テスト完了 ===');
-}
-
-// ============================================
-// Scoring.gs 追記: 投稿日フィルタリング連携
-// 追記場所: Scoring.gsの最下部
-// ============================================
-
-/**
- * 3ヶ月未満の記事を除外した優先ページ取得（拡張版）
- * ★改善版: 冷却期間中でもページは除外せず、冷却情報を付加して表示
- * @param {number} limit - 取得件数
- * @return {Array} フィルタリング済みページ（冷却情報付き）
- */
-function getTopPriorityPagesFiltered(limit = 10) {
-  // 優先ページ取得（多めに取得）
-  let pages = [];
-  
-  if (typeof getTopPriorityPages === 'function') {
-    pages = getTopPriorityPages(limit * 3);
-  } else {
-    Logger.log('警告: 優先ページ取得関数が見つかりません');
-    return [];
-  }
-  
-  // 投稿日フィルター（3ヶ月未満を除外）
-  if (typeof filterPagesByPublishDate === 'function') {
-    const result = filterPagesByPublishDate(pages);
-    Logger.log('投稿日フィルター: ' + result.message);
-    pages = result.filtered;
-  }
-  
-  // ★改善: 冷却期間によるページ除外をやめ、冷却情報を付加するのみ
-  pages = pages.map(page => {
-    const coolingStatus = checkCoolingStatus(page.url);
-    return {
-      ...page,
-      coolingStatus: coolingStatus,
-      hasCoolingTasks: coolingStatus.isCooling,
-      coolingTasks: coolingStatus.coolingTasks || [],
-      availableTasks: coolingStatus.availableTasks || []
-    };
-  });
-  
-  // 件数制限
-  return pages.slice(0, limit);
-}
-
-
-/**
- * リライト提案時の総合チェック
- * @param {string} pageUrl - ページURL
- * @param {string} taskType - タスク種別
- * @return {Object} チェック結果
- */
-function canSuggestRewrite(pageUrl, taskType) {
-  const result = {
-    canSuggest: true,
-    reasons: []
-  };
-  
-  // 1. 冷却期間チェック
-  if (typeof shouldExcludeFromSuggestion === 'function') {
-    if (shouldExcludeFromSuggestion(pageUrl, taskType)) {
-      result.canSuggest = false;
-      result.reasons.push('冷却期間中（' + taskType + '）');
-    }
-  }
-  
-  // 2. 投稿日チェック（3ヶ月未満）
-  if (typeof shouldExcludeByPublishDate === 'function') {
-    if (shouldExcludeByPublishDate(pageUrl)) {
-      result.canSuggest = false;
-      result.reasons.push('投稿から3ヶ月未満');
-    }
-  }
-  
-  return result;
-}
-
-
-/**
- * 週次分析用: フィルター適用済みサマリー
- * @return {Object} サマリー情報
- */
-function getFilteredPagesSummary() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('統合データ');
-  
-  if (!sheet) {
-    return { error: '統合データシートが見つかりません' };
-  }
-  
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const rewriteOkColIndex = headers.indexOf('リライト可能');
-  const lastRow = sheet.getLastRow();
-  
-  if (rewriteOkColIndex === -1 || lastRow <= 1) {
-    return {
-      totalPages: lastRow - 1,
-      rewriteReady: lastRow - 1,
-      tooNew: 0,
-      message: '投稿日フィルター未設定'
-    };
-  }
-  
-  const data = sheet.getRange(2, rewriteOkColIndex + 1, lastRow - 1, 1).getValues();
-  
-  let rewriteReady = 0;
-  let tooNew = 0;
-  
-  for (const row of data) {
-    if (row[0] === '○') {
-      rewriteReady++;
-    } else if (row[0] === '×') {
-      tooNew++;
-    }
-  }
-  
-  return {
-    totalPages: lastRow - 1,
-    rewriteReady: rewriteReady,
-    tooNew: tooNew,
-    unknown: (lastRow - 1) - rewriteReady - tooNew,
-    message: `${rewriteReady}件がリライト対象、${tooNew}件が3ヶ月未満`
-  };
-}
-
-// ============================================
-// Day 22追加: トレンド判定機能（GyronSEO 4週間分析）
-// ============================================
-
-/**
- * GyronSEO_RAWから過去4週間の順位データを取得
- * @param {string} pageUrl - ページURL（パス形式）
- * @param {string} targetKeyword - ターゲットキーワード
- * @return {Object} 4週間の順位データ
- */
-function getGyronRankHistory(pageUrl, targetKeyword) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('GyronSEO_RAW');
-  
-  if (!sheet) {
-    return { success: false, error: 'GyronSEO_RAWシートが見つかりません' };
-  }
-  
-  const data = sheet.getDataRange().getValues();
-  const headers = data[0];
-  
-  // ヘッダーから日付列を抽出（Date型の列）
-  const dateCols = [];
-  for (let col = 0; col < headers.length; col++) {
-    if (headers[col] instanceof Date) {
-      dateCols.push({ col: col, date: headers[col] });
-    }
-  }
-  
-  // 日付降順でソート（最新が先頭）
-  dateCols.sort((a, b) => b.date - a.date);
-  
-  // 最新4週間分を取得（週1回更新想定）
-  const recentDates = dateCols.slice(0, 4);
-  
-  if (recentDates.length < 2) {
-    return { success: false, error: '十分な履歴データがありません（2週間以上必要）' };
-  }
-  
-  // 該当ページ・KWの順位を検索
-  const normalizedUrl = normalizeUrlPath(pageUrl);
-  const normalizedKW = (targetKeyword || '').toLowerCase().trim();
-  
-  let matchedRow = null;
-  
-  for (let i = 1; i < data.length; i++) {
-    const rowKW = (data[i][0] || '').toString().toLowerCase().trim();
-    const rowUrl = normalizeUrlPath(data[i][1] || '');
-    
-    // KWとURLの両方でマッチング
-    const kwMatch = normalizedKW && rowKW.includes(normalizedKW);
-    const urlMatch = normalizedUrl && (rowUrl === normalizedUrl || rowUrl.includes(normalizedUrl));
-    
-    if (kwMatch || urlMatch) {
-      matchedRow = data[i];
-      break;
-    }
-  }
-  
-  if (!matchedRow) {
-    return { success: false, error: 'マッチするデータが見つかりません' };
-  }
-  
-  // 各週の順位を取得
-  const weeklyRanks = recentDates.map(d => {
-    const rank = matchedRow[d.col];
-    let rankNum = null;
-    
-    if (rank !== '' && rank !== null) {
-      if (String(rank).includes('圏外')) {
-        rankNum = 101;
-      } else {
-        rankNum = parseFloat(rank) || null;
-      }
-    }
-    
-    return {
-      date: d.date,
-      rank: rankNum
-    };
-  });
-  
-  return {
-    success: true,
-    keyword: matchedRow[0],
-    url: matchedRow[1],
-    weeklyRanks: weeklyRanks
-  };
-}
-
-/**
- * 4週間のトレンドを判定
- * @param {Array} weeklyRanks - 週次順位データ配列
- * @return {Object} トレンド判定結果
- */
-function analyzeRankTrend(weeklyRanks) {
-  // 有効な順位データのみ抽出
-  const validRanks = weeklyRanks.filter(w => w.rank !== null && w.rank > 0);
-  
-  if (validRanks.length < 2) {
-    return {
-      trend: 'unknown',
-      trendLabel: '不明',
-      priorityModifier: 0,
-      message: '十分なデータがありません'
-    };
-  }
-  
-  // 最新と4週間前を比較
-  const latestRank = validRanks[0].rank;
-  const oldestRank = validRanks[validRanks.length - 1].rank;
-  const rankChange = oldestRank - latestRank; // 正=改善、負=悪化
-  
-  // 週ごとの変動幅を計算
-  let maxWeeklyChange = 0;
-  for (let i = 0; i < validRanks.length - 1; i++) {
-    const change = Math.abs(validRanks[i].rank - validRanks[i + 1].rank);
-    if (change > maxWeeklyChange) {
-      maxWeeklyChange = change;
-    }
-  }
-  
-  // 全体の変動幅
-  const allRanks = validRanks.map(w => w.rank);
-  const minRank = Math.min(...allRanks);
-  const maxRank = Math.max(...allRanks);
-  const totalVariation = maxRank - minRank;
-  
-  // トレンド判定
-  let trend, trendLabel, priorityModifier, message;
-  
-  if (maxWeeklyChange >= 6) {
-    // 不安定: 週ごとに±6位以上の乱高下
-    trend = 'unstable';
-    trendLabel = '不安定';
-    priorityModifier = -20; // 優先度下げ
-    message = `週ごとに${maxWeeklyChange}位の変動あり。様子見推奨`;
-  } else if (rankChange >= 6) {
-    // 上昇傾向: 4週間で6位以上改善
-    trend = 'improving';
-    trendLabel = '上昇傾向';
-    priorityModifier = -15; // 優先度下げ（好調なので触らない）
-    message = `4週間で${rankChange}位改善中。現状維持推奨`;
-  } else if (rankChange <= -6) {
-    // 下降傾向: 4週間で6位以上悪化
-    trend = 'declining';
-    trendLabel = '下降傾向';
-    priorityModifier = 15; // 優先度上げ
-    message = `4週間で${Math.abs(rankChange)}位悪化。要リライト`;
-  } else if (totalVariation <= 5) {
-    // 安定: 4週間の変動幅±5位以内
-    trend = 'stable';
-    trendLabel = '安定';
-    priorityModifier = 0; // 通常スコアリング
-    message = `順位安定（変動幅${totalVariation}位）`;
-  } else {
-    // その他（小幅変動）
-    trend = 'stable';
-    trendLabel = '安定';
-    priorityModifier = 0;
-    message = `小幅変動（変動幅${totalVariation}位）`;
-  }
-  
-  return {
-    trend: trend,
-    trendLabel: trendLabel,
-    priorityModifier: priorityModifier,
-    message: message,
-    latestRank: latestRank,
-    oldestRank: oldestRank,
-    rankChange: rankChange,
-    maxWeeklyChange: maxWeeklyChange,
-    totalVariation: totalVariation
-  };
-}
-
-/**
- * URLをパス形式に正規化
- */
-function normalizeUrlPath(url) {
-  if (!url) return '';
-  
-  let path = String(url).toLowerCase();
-  
-  // フルURLからパスを抽出
-  if (path.includes('://')) {
-    try {
-      const urlObj = new URL(path);
-      path = urlObj.pathname;
-    } catch (e) {
-      const match = path.match(/https?:\/\/[^\/]+(\/.*)?/);
-      if (match && match[1]) {
-        path = match[1];
-      }
-    }
-  }
-  
-  // 先頭スラッシュを確保
-  if (!path.startsWith('/')) {
-    path = '/' + path;
-  }
-  
-  // 末尾スラッシュを除去
-  path = path.replace(/\/$/, '');
-  
-  return path;
-}
-
-/**
- * ページのトレンドを取得してスコア修正を適用
- * @param {string} pageUrl - ページURL
- * @param {string} targetKeyword - ターゲットキーワード
- * @param {number} baseScore - 基本スコア
- * @return {Object} トレンド情報と修正後スコア
- */
-function applyTrendModifier(pageUrl, targetKeyword, baseScore) {
-  const history = getGyronRankHistory(pageUrl, targetKeyword);
-  
-  if (!history.success) {
-    return {
-      finalScore: baseScore,
-      trend: null,
-      message: history.error
-    };
-  }
-  
-  const trendAnalysis = analyzeRankTrend(history.weeklyRanks);
-  
-  // スコア修正を適用（0-100の範囲内に収める）
-  let finalScore = baseScore + trendAnalysis.priorityModifier;
-  finalScore = Math.max(0, Math.min(100, finalScore));
-  
-  return {
-    finalScore: finalScore,
-    baseScore: baseScore,
-    modifier: trendAnalysis.priorityModifier,
-    trend: trendAnalysis.trend,
-    trendLabel: trendAnalysis.trendLabel,
-    message: trendAnalysis.message,
-    weeklyRanks: history.weeklyRanks
-  };
-}
-
-/**
- * トレンド判定のテスト
- */
-function testTrendAnalysis() {
-  Logger.log('=== トレンド判定テスト ===');
-  
-  // テスト用URL（統合データから取得）
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('統合データ');
-  
-  if (!sheet) {
-    Logger.log('統合データシートが見つかりません');
-    return;
-  }
-  
-  const data = sheet.getDataRange().getValues();
-  const headers = data[0];
-  const urlIdx = headers.indexOf('page_url');
-  const kwIdx = headers.indexOf('target_keyword');
-  
-  // 最初の5ページでテスト
-  for (let i = 1; i <= Math.min(5, data.length - 1); i++) {
-    const url = data[i][urlIdx];
-    const kw = data[i][kwIdx];
-    
-    Logger.log(`\n--- テスト${i}: ${url} ---`);
-    Logger.log(`ターゲットKW: ${kw}`);
-    
-    const result = applyTrendModifier(url, kw, 50);
-    
-    if (result.trend) {
-      Logger.log(`トレンド: ${result.trendLabel}`);
-      Logger.log(`基本スコア: ${result.baseScore} → 修正後: ${result.finalScore} (${result.modifier >= 0 ? '+' : ''}${result.modifier})`);
-      Logger.log(`メッセージ: ${result.message}`);
-      
-      if (result.weeklyRanks) {
-        Logger.log('週次順位: ' + result.weeklyRanks.map(w => w.rank || 'N/A').join(' → '));
-      }
-    } else {
-      Logger.log(`エラー: ${result.message}`);
-    }
-  }
-  
-  Logger.log('\n=== テスト完了 ===');
-}
-
-function checkPositionDistribution() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('統合データ');
-  const data = sheet.getDataRange().getValues();
-  const headers = data[0];
-  
-  // 順位列を探す
-  const posIdx = headers.indexOf('gyron_position') !== -1 ? 
-                 headers.indexOf('gyron_position') : 
-                 headers.indexOf('avg_position');
-  
-  Logger.log('使用する順位列: ' + headers[posIdx]);
-  
-  const distribution = { 
-    '1-3位': 0, 
-    '4-10位': 0, 
-    '11-20位': 0, 
-    '21-30位': 0, 
-    '31-50位': 0, 
-    '51位以上': 0,
-    '順位なし': 0
-  };
-  
-  for (let i = 1; i < data.length; i++) {
-    const pos = parseFloat(data[i][posIdx]) || 0;
-    
-    if (pos === 0 || isNaN(pos)) distribution['順位なし']++;
-    else if (pos <= 3) distribution['1-3位']++;
-    else if (pos <= 10) distribution['4-10位']++;
-    else if (pos <= 20) distribution['11-20位']++;
-    else if (pos <= 30) distribution['21-30位']++;
-    else if (pos <= 50) distribution['31-50位']++;
-    else distribution['51位以上']++;
-  }
-  
-  Logger.log('=== 順位分布 ===');
-  Object.keys(distribution).forEach(k => {
-    Logger.log(k + ': ' + distribution[k] + 'ページ');
-  });
-}
-
-function testPositionScoreChange() {
-  Logger.log('=== 順位スコア修正確認テスト ===');
-  
-  // 各順位帯のスコアを確認
-  const testPositions = [1, 3, 5, 10, 11, 15, 20, 25, 30];
-  
-  testPositions.forEach(pos => {
-    let score = 0;
-    
-    // ★ここが修正後のロジックと一致しているか確認
-    if (pos >= 1 && pos <= 3) {
-      score = 10;
-    } else if (pos >= 4 && pos <= 10) {
-      score = 75;
-    } else if (pos >= 11 && pos <= 20) {
-      score = 100;
-    } else if (pos >= 21 && pos <= 30) {
-      score = 95;
-    } else if (pos >= 31 && pos <= 50) {
-      score = 40;
-    } else {
-      score = 20;
-    }
-    
-    Logger.log(pos + '位 → スコア: ' + score + '点');
-  });
-  
-  Logger.log('\n期待値: 11-20位が100点、21-30位が95点、4-10位が75点、1-3位が10点');
-}
-
-function debugTopPagesScore() {
-  Logger.log('=== 上位5ページのスコア詳細 ===');
-  
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('統合データ');
-  const data = sheet.getDataRange().getValues();
-  const headers = data[0];
-  
-  // 列インデックス取得
-  const urlIdx = headers.indexOf('page_url');
-  const posIdx = headers.indexOf('gyron_position');
-  const oppIdx = headers.indexOf('opportunity_score');
-  const totalIdx = headers.indexOf('total_priority_score');
-  
-  Logger.log('列: page_url=' + urlIdx + ', gyron_position=' + posIdx + ', opportunity_score=' + oppIdx + ', total_priority_score=' + totalIdx);
-  
-  // 上位5ページの詳細
-  const pages = [];
-  for (let i = 1; i < data.length; i++) {
-    pages.push({
-      url: data[i][urlIdx],
-      position: data[i][posIdx],
-      opportunityScore: data[i][oppIdx],
-      totalScore: data[i][totalIdx]
-    });
-  }
-  
-  // totalScoreでソート
-  pages.sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
-  
-  Logger.log('\n--- 上位10ページ ---');
-  pages.slice(0, 10).forEach((p, i) => {
-    Logger.log((i+1) + '位: ' + p.url);
-    Logger.log('   順位: ' + p.position + '位');
-    Logger.log('   opportunity_score: ' + p.opportunityScore);
-    Logger.log('   total_priority_score: ' + p.totalScore);
-  });
-  
-  Logger.log('\n--- 11-20位のページ ---');
-  const rank11to20 = pages.filter(p => p.position >= 11 && p.position <= 20);
-  rank11to20.slice(0, 5).forEach((p, i) => {
-    Logger.log((i+1) + '. ' + p.url);
-    Logger.log('   順位: ' + p.position + '位');
-    Logger.log('   opportunity_score: ' + p.opportunityScore);
-    Logger.log('   total_priority_score: ' + p.totalScore);
-  });
-}
-
-function debugGSCQueryData() {
-  Logger.log('=== GSCクエリデータ確認 ===');
-  
-  const testUrl = '/ipad-mini-cheap-buy-methods';
-  
-  // getQueryDataForPage関数を呼び出し
-  const queryData = getQueryDataForPage(testUrl);
-  
-  if (!queryData || queryData.length === 0) {
-    Logger.log('データなし');
-    return;
-  }
-  
-  Logger.log('取得件数: ' + queryData.length);
-  Logger.log('\n--- 先頭10件 ---');
-  
-  queryData.slice(0, 10).forEach((q, i) => {
-    Logger.log((i+1) + '. ' + q.query + ' | 表示: ' + q.impressions + ' | クリック: ' + q.clicks);
-  });
-}
-
-// ============================================
-// ページ構造取得機能（スクレイピング）
-// ============================================
-
-/**
- * ページの実際の構造情報を取得
- * @param {string} pageUrl - ページURL（パスまたはフルURL）
- * @return {Object} ページ構造情報
- */
-function fetchPageStructure(pageUrl) {
-  try {
-    // フルURLに変換
-    var fullUrl = convertToFullUrl(pageUrl);
-    
-    if (!fullUrl) {
-      return { success: false, error: 'URLを解決できません' };
-    }
-    
-    Logger.log('ページ取得開始: ' + fullUrl);
-    
-    // ページHTMLを取得
-    var response = UrlFetchApp.fetch(fullUrl, {
-      muteHttpExceptions: true,
-      followRedirects: true,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SEORewriteTool/1.0)'
-      }
-    });
-    
-    var responseCode = response.getResponseCode();
-    if (responseCode !== 200) {
-      return { success: false, error: 'HTTPエラー: ' + responseCode };
-    }
-    
-    var html = response.getContentText('UTF-8');
-    
-    // 各要素を抽出
-    var structure = {
-      success: true,
-      url: fullUrl,
-      title: extractTitle(html),
-      metaDescription: extractMetaDescription(html),
-      h1: extractH1(html),
-      h2List: extractH2List(html),
-      wordCount: estimateWordCount(html),
-      hasImages: countImages(html),
-      hasFAQ: detectFAQSchema(html),
-      fetchedAt: new Date().toISOString()
-    };
-    
-    Logger.log('ページ構造取得成功: ' + structure.title);
-    return structure;
-    
-  } catch (error) {
-    Logger.log('ページ取得エラー: ' + error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * パスURLをフルURLに変換
- */
-function convertToFullUrl(pageUrl) {
-  if (!pageUrl) return null;
-  
-  // すでにフルURLの場合
-  if (pageUrl.startsWith('http://') || pageUrl.startsWith('https://')) {
-    return pageUrl;
-  }
-  
-  // 設定シートからベースURLを取得
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var settingsSheet = ss.getSheetByName('設定・マスタ');
-  
-  if (!settingsSheet) {
-    Logger.log('設定シートが見つかりません');
-    return null;
-  }
-  
-  var data = settingsSheet.getDataRange().getValues();
-  var baseUrl = '';
-  
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === 'SITE_URL' || data[i][0] === 'BASE_URL') {
-      baseUrl = String(data[i][1] || '').trim();
-      break;
-    }
-  }
-  
-  if (!baseUrl) {
-    Logger.log('ベースURLが設定されていません');
-    return null;
-  }
-  
-  // 末尾スラッシュを調整
-  baseUrl = baseUrl.replace(/\/$/, '');
-  var path = pageUrl.startsWith('/') ? pageUrl : '/' + pageUrl;
-  
-  return baseUrl + path;
-}
-
-/**
- * titleタグを抽出
- */
-function extractTitle(html) {
-  var match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-  if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
-  }
-  return null;
-}
-
-/**
- * メタディスクリプションを抽出
- */
-function extractMetaDescription(html) {
-  // name="description" パターン
-  var match = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["'][^>]*>/i);
-  if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
-  }
-  
-  // content が先に来るパターン
-  match = html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']description["'][^>]*>/i);
-  if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
-  }
-  
-  return null;
-}
-
-/**
- * H1タグを抽出
- */
-function extractH1(html) {
-  var match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-  if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
-  }
-  
-  // タグ内にspanなどがある場合
-  match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  if (match && match[1]) {
-    var text = match[1].replace(/<[^>]+>/g, '').trim();
-    return decodeHtmlEntities(text);
-  }
-  
-  return null;
-}
-
-/**
- * H2タグのリストを抽出
- */
-function extractH2List(html) {
-  var h2List = [];
-  var regex = /<h2[^>]*>([\s\S]*?)<\/h2>/gi;
-  var match;
-  
-  while ((match = regex.exec(html)) !== null) {
-    var text = match[1].replace(/<[^>]+>/g, '').trim();
-    if (text) {
-      h2List.push(decodeHtmlEntities(text));
-    }
-  }
-  
-  return h2List;
-}
-
-/**
- * 本文の文字数を推定
- */
-function estimateWordCount(html) {
-  // bodyタグ内のテキストを抽出
-  var bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  if (!bodyMatch) return 0;
-  
-  var bodyHtml = bodyMatch[1];
-  
-  // script, style, navなどを除去
-  bodyHtml = bodyHtml.replace(/<script[\s\S]*?<\/script>/gi, '');
-  bodyHtml = bodyHtml.replace(/<style[\s\S]*?<\/style>/gi, '');
-  bodyHtml = bodyHtml.replace(/<nav[\s\S]*?<\/nav>/gi, '');
-  bodyHtml = bodyHtml.replace(/<header[\s\S]*?<\/header>/gi, '');
-  bodyHtml = bodyHtml.replace(/<footer[\s\S]*?<\/footer>/gi, '');
-  
-  // HTMLタグを除去
-  var text = bodyHtml.replace(/<[^>]+>/g, ' ');
-  
-  // 空白を正規化
-  text = text.replace(/\s+/g, '');
-  
-  return text.length;
-}
-
-/**
- * 画像数をカウント
- */
-function countImages(html) {
-  var matches = html.match(/<img[^>]+>/gi);
-  return matches ? matches.length : 0;
-}
-
-/**
- * FAQスキーマの有無を検出
- */
-function detectFAQSchema(html) {
-  return html.includes('FAQPage') || 
-         html.includes('Question') || 
-         html.includes('faq') ||
-         html.includes('よくある質問');
-}
-
-/**
- * HTMLエンティティをデコード
- */
-function decodeHtmlEntities(text) {
-  if (!text) return text;
-  
-  return text
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
-}
-
-/**
- * ページ構造をキャッシュ付きで取得
- * 統合データシートに保存して再利用
- */
-function getPageStructureCached(pageUrl) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('統合データ');
-  
-  if (!sheet) {
-    return fetchPageStructure(pageUrl);
-  }
-  
-  var data = sheet.getDataRange().getValues();
-  var headers = data[0];
-  
-  var urlIdx = headers.indexOf('page_url');
-  var titleIdx = headers.indexOf('page_title');
-  var h1Idx = headers.indexOf('h1_tag');
-  var metaDescIdx = headers.indexOf('meta_description');
-  var h2ListIdx = headers.indexOf('h2_list');
-  var lastFetchIdx = headers.indexOf('structure_fetched_at');
-  
-  // 該当行を検索
-  var targetRow = -1;
-  for (var i = 1; i < data.length; i++) {
-    if (normalizeUrlPath(data[i][urlIdx]) === normalizeUrlPath(pageUrl)) {
-      targetRow = i;
-      break;
-    }
-  }
-  
-  if (targetRow === -1) {
-    return fetchPageStructure(pageUrl);
-  }
-  
-  // キャッシュが7日以内なら再利用
-  var lastFetch = lastFetchIdx >= 0 ? data[targetRow][lastFetchIdx] : null;
-  var cacheValid = false;
-  
-  if (lastFetch) {
-    var fetchDate = new Date(lastFetch);
-    var now = new Date();
-    var diffDays = (now - fetchDate) / (1000 * 60 * 60 * 24);
-    cacheValid = diffDays < 7;
-  }
-  
-  // キャッシュが有効で、H1が存在する場合は再利用
-  if (cacheValid && h1Idx >= 0 && data[targetRow][h1Idx]) {
-    return {
-      success: true,
-      url: pageUrl,
-      title: titleIdx >= 0 ? data[targetRow][titleIdx] : null,
-      h1: h1Idx >= 0 ? data[targetRow][h1Idx] : null,
-      metaDescription: metaDescIdx >= 0 ? data[targetRow][metaDescIdx] : null,
-      h2List: h2ListIdx >= 0 ? parseH2List(data[targetRow][h2ListIdx]) : [],
-      fromCache: true
-    };
-  }
-  
-  // キャッシュがない or 古い場合は取得して保存
-  var structure = fetchPageStructure(pageUrl);
-  
-  if (structure.success) {
-    savePageStructure(sheet, headers, targetRow, structure);
-  }
-  
-  return structure;
-}
-
-/**
- * H2リストをパース
- */
-function parseH2List(h2String) {
-  if (!h2String) return [];
-  if (Array.isArray(h2String)) return h2String;
-  return String(h2String).split('\n').filter(function(s) { return s.trim(); });
-}
-
-/**
- * ページ構造をシートに保存
- */
-function savePageStructure(sheet, headers, rowIndex, structure) {
-  var h1Idx = headers.indexOf('h1_tag');
-  var metaDescIdx = headers.indexOf('meta_description');
-  var h2ListIdx = headers.indexOf('h2_list');
-  var wordCountIdx = headers.indexOf('word_count');
-  var lastFetchIdx = headers.indexOf('structure_fetched_at');
-  
-  // 列がなければ追加
-  var lastCol = headers.length;
-  
-  if (h1Idx === -1) {
-    h1Idx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('h1_tag');
-    lastCol++;
-  }
-  
-  if (metaDescIdx === -1) {
-    metaDescIdx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('meta_description');
-    lastCol++;
-  }
-  
-  if (h2ListIdx === -1) {
-    h2ListIdx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('h2_list');
-    lastCol++;
-  }
-  
-  if (wordCountIdx === -1) {
-    wordCountIdx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('word_count');
-    lastCol++;
-  }
-  
-  if (lastFetchIdx === -1) {
-    lastFetchIdx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('structure_fetched_at');
-    lastCol++;
-  }
-  
-  // データを保存
-  var row = rowIndex + 1; // 1-indexed
-  
-  if (structure.h1) {
-    sheet.getRange(row, h1Idx + 1).setValue(structure.h1);
-  }
-  if (structure.metaDescription) {
-    sheet.getRange(row, metaDescIdx + 1).setValue(structure.metaDescription);
-  }
-  if (structure.h2List && structure.h2List.length > 0) {
-    sheet.getRange(row, h2ListIdx + 1).setValue(structure.h2List.join('\n'));
-  }
-  if (structure.wordCount) {
-    sheet.getRange(row, wordCountIdx + 1).setValue(structure.wordCount);
-  }
-  sheet.getRange(row, lastFetchIdx + 1).setValue(new Date());
-  
-  Logger.log('ページ構造を保存しました: 行' + row);
-}
-
-/**
- * テスト: ページ構造取得
- */
-function testFetchPageStructure() {
-  var testUrl = '/iphonerepair-battery70-danger';
-  
-  Logger.log('=== ページ構造取得テスト ===');
-  
-  var structure = fetchPageStructure(testUrl);
-  
-  if (structure.success) {
-    Logger.log('タイトル: ' + structure.title);
-    Logger.log('H1: ' + structure.h1);
-    Logger.log('メタディスクリプション: ' + (structure.metaDescription || '').substring(0, 50) + '...');
-    Logger.log('H2数: ' + structure.h2List.length);
-    structure.h2List.forEach(function(h2, i) {
-      Logger.log('  H2-' + (i+1) + ': ' + h2);
-    });
-    Logger.log('推定文字数: ' + structure.wordCount);
-    Logger.log('画像数: ' + structure.hasImages);
-  } else {
-    Logger.log('エラー: ' + structure.error);
-  }
-  
-  Logger.log('=== テスト完了 ===');
-}// ============================================
-// ページ構造取得機能（スクレイピング）
-// ============================================
-
-/**
- * ページの実際の構造情報を取得
- * @param {string} pageUrl - ページURL（パスまたはフルURL）
- * @return {Object} ページ構造情報
- */
-function fetchPageStructure(pageUrl) {
-  try {
-    // フルURLに変換
-    var fullUrl = convertToFullUrl(pageUrl);
-    
-    if (!fullUrl) {
-      return { success: false, error: 'URLを解決できません' };
-    }
-    
-    Logger.log('ページ取得開始: ' + fullUrl);
-    
-    // ページHTMLを取得
-    var response = UrlFetchApp.fetch(fullUrl, {
-      muteHttpExceptions: true,
-      followRedirects: true,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SEORewriteTool/1.0)'
-      }
-    });
-    
-    var responseCode = response.getResponseCode();
-    if (responseCode !== 200) {
-      return { success: false, error: 'HTTPエラー: ' + responseCode };
-    }
-    
-    var html = response.getContentText('UTF-8');
-    
-    // 各要素を抽出
-    var structure = {
-      success: true,
-      url: fullUrl,
-      title: extractTitle(html),
-      metaDescription: extractMetaDescription(html),
-      h1: extractH1(html),
-      h2List: extractH2List(html),
-      wordCount: estimateWordCount(html),
-      hasImages: countImages(html),
-      hasFAQ: detectFAQSchema(html),
-      fetchedAt: new Date().toISOString()
-    };
-    
-    Logger.log('ページ構造取得成功: ' + structure.title);
-    return structure;
-    
-  } catch (error) {
-    Logger.log('ページ取得エラー: ' + error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * パスURLをフルURLに変換
- */
-function convertToFullUrl(pageUrl) {
-  if (!pageUrl) return null;
-  
-  // すでにフルURLの場合
-  if (pageUrl.startsWith('http://') || pageUrl.startsWith('https://')) {
-    return pageUrl;
-  }
-  
-  // 設定シートからベースURLを取得
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var settingsSheet = ss.getSheetByName('設定・マスタ');
-  
-  if (!settingsSheet) {
-    Logger.log('設定シートが見つかりません');
-    return null;
-  }
-  
-  var data = settingsSheet.getDataRange().getValues();
-  var baseUrl = '';
-  
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === 'SITE_URL' || data[i][0] === 'BASE_URL') {
-      baseUrl = String(data[i][1] || '').trim();
-      break;
-    }
-  }
-  
-  if (!baseUrl) {
-    Logger.log('ベースURLが設定されていません');
-    return null;
-  }
-  
-  // 末尾スラッシュを調整
-  baseUrl = baseUrl.replace(/\/$/, '');
-  var path = pageUrl.startsWith('/') ? pageUrl : '/' + pageUrl;
-  
-  return baseUrl + path;
-}
-
-/**
- * titleタグを抽出
- */
-function extractTitle(html) {
-  var match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-  if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
-  }
-  return null;
-}
-
-/**
- * メタディスクリプションを抽出
- */
-function extractMetaDescription(html) {
-  // name="description" パターン
-  var match = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["'][^>]*>/i);
-  if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
-  }
-  
-  // content が先に来るパターン
-  match = html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']description["'][^>]*>/i);
-  if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
-  }
-  
-  return null;
-}
-
-/**
- * H1タグを抽出
- */
-function extractH1(html) {
-  var match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-  if (match && match[1]) {
-    return decodeHtmlEntities(match[1].trim());
-  }
-  
-  // タグ内にspanなどがある場合
-  match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  if (match && match[1]) {
-    var text = match[1].replace(/<[^>]+>/g, '').trim();
-    return decodeHtmlEntities(text);
-  }
-  
-  return null;
-}
-
-/**
- * H2タグのリストを抽出
- */
-function extractH2List(html) {
-  var h2List = [];
-  var regex = /<h2[^>]*>([\s\S]*?)<\/h2>/gi;
-  var match;
-  
-  while ((match = regex.exec(html)) !== null) {
-    var text = match[1].replace(/<[^>]+>/g, '').trim();
-    if (text) {
-      h2List.push(decodeHtmlEntities(text));
-    }
-  }
-  
-  return h2List;
-}
-
-/**
- * 本文の文字数を推定
- */
-function estimateWordCount(html) {
-  // bodyタグ内のテキストを抽出
-  var bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  if (!bodyMatch) return 0;
-  
-  var bodyHtml = bodyMatch[1];
-  
-  // script, style, navなどを除去
-  bodyHtml = bodyHtml.replace(/<script[\s\S]*?<\/script>/gi, '');
-  bodyHtml = bodyHtml.replace(/<style[\s\S]*?<\/style>/gi, '');
-  bodyHtml = bodyHtml.replace(/<nav[\s\S]*?<\/nav>/gi, '');
-  bodyHtml = bodyHtml.replace(/<header[\s\S]*?<\/header>/gi, '');
-  bodyHtml = bodyHtml.replace(/<footer[\s\S]*?<\/footer>/gi, '');
-  
-  // HTMLタグを除去
-  var text = bodyHtml.replace(/<[^>]+>/g, ' ');
-  
-  // 空白を正規化
-  text = text.replace(/\s+/g, '');
-  
-  return text.length;
-}
-
-/**
- * 画像数をカウント
- */
-function countImages(html) {
-  var matches = html.match(/<img[^>]+>/gi);
-  return matches ? matches.length : 0;
-}
-
-/**
- * FAQスキーマの有無を検出
- */
-function detectFAQSchema(html) {
-  return html.includes('FAQPage') || 
-         html.includes('Question') || 
-         html.includes('faq') ||
-         html.includes('よくある質問');
-}
-
-/**
- * HTMLエンティティをデコード
- */
-function decodeHtmlEntities(text) {
-  if (!text) return text;
-  
-  return text
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
-}
-
-/**
- * ページ構造をキャッシュ付きで取得
- * 統合データシートに保存して再利用
- */
-function getPageStructureCached(pageUrl) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('統合データ');
-  
-  if (!sheet) {
-    return fetchPageStructure(pageUrl);
-  }
-  
-  var data = sheet.getDataRange().getValues();
-  var headers = data[0];
-  
-  var urlIdx = headers.indexOf('page_url');
-  var titleIdx = headers.indexOf('page_title');
-  var h1Idx = headers.indexOf('h1_tag');
-  var metaDescIdx = headers.indexOf('meta_description');
-  var h2ListIdx = headers.indexOf('h2_list');
-  var lastFetchIdx = headers.indexOf('structure_fetched_at');
-  
-  // 該当行を検索
-  var targetRow = -1;
-  for (var i = 1; i < data.length; i++) {
-    if (normalizeUrlPath(data[i][urlIdx]) === normalizeUrlPath(pageUrl)) {
-      targetRow = i;
-      break;
-    }
-  }
-  
-  if (targetRow === -1) {
-    return fetchPageStructure(pageUrl);
-  }
-  
-  // キャッシュが7日以内なら再利用
-  var lastFetch = lastFetchIdx >= 0 ? data[targetRow][lastFetchIdx] : null;
-  var cacheValid = false;
-  
-  if (lastFetch) {
-    var fetchDate = new Date(lastFetch);
-    var now = new Date();
-    var diffDays = (now - fetchDate) / (1000 * 60 * 60 * 24);
-    cacheValid = diffDays < 7;
-  }
-  
-  // キャッシュが有効で、H1が存在する場合は再利用
-  if (cacheValid && h1Idx >= 0 && data[targetRow][h1Idx]) {
-    return {
-      success: true,
-      url: pageUrl,
-      title: titleIdx >= 0 ? data[targetRow][titleIdx] : null,
-      h1: h1Idx >= 0 ? data[targetRow][h1Idx] : null,
-      metaDescription: metaDescIdx >= 0 ? data[targetRow][metaDescIdx] : null,
-      h2List: h2ListIdx >= 0 ? parseH2List(data[targetRow][h2ListIdx]) : [],
-      fromCache: true
-    };
-  }
-  
-  // キャッシュがない or 古い場合は取得して保存
-  var structure = fetchPageStructure(pageUrl);
-  
-  if (structure.success) {
-    savePageStructure(sheet, headers, targetRow, structure);
-  }
-  
-  return structure;
-}
-
-/**
- * H2リストをパース
- */
-function parseH2List(h2String) {
-  if (!h2String) return [];
-  if (Array.isArray(h2String)) return h2String;
-  return String(h2String).split('\n').filter(function(s) { return s.trim(); });
-}
-
-/**
- * ページ構造をシートに保存
- */
-function savePageStructure(sheet, headers, rowIndex, structure) {
-  var h1Idx = headers.indexOf('h1_tag');
-  var metaDescIdx = headers.indexOf('meta_description');
-  var h2ListIdx = headers.indexOf('h2_list');
-  var wordCountIdx = headers.indexOf('word_count');
-  var lastFetchIdx = headers.indexOf('structure_fetched_at');
-  
-  // 列がなければ追加
-  var lastCol = headers.length;
-  
-  if (h1Idx === -1) {
-    h1Idx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('h1_tag');
-    lastCol++;
-  }
-  
-  if (metaDescIdx === -1) {
-    metaDescIdx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('meta_description');
-    lastCol++;
-  }
-  
-  if (h2ListIdx === -1) {
-    h2ListIdx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('h2_list');
-    lastCol++;
-  }
-  
-  if (wordCountIdx === -1) {
-    wordCountIdx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('word_count');
-    lastCol++;
-  }
-  
-  if (lastFetchIdx === -1) {
-    lastFetchIdx = lastCol;
-    sheet.getRange(1, lastCol + 1).setValue('structure_fetched_at');
-    lastCol++;
-  }
-  
-  // データを保存
-  var row = rowIndex + 1; // 1-indexed
-  
-  if (structure.h1) {
-    sheet.getRange(row, h1Idx + 1).setValue(structure.h1);
-  }
-  if (structure.metaDescription) {
-    sheet.getRange(row, metaDescIdx + 1).setValue(structure.metaDescription);
-  }
-  if (structure.h2List && structure.h2List.length > 0) {
-    sheet.getRange(row, h2ListIdx + 1).setValue(structure.h2List.join('\n'));
-  }
-  if (structure.wordCount) {
-    sheet.getRange(row, wordCountIdx + 1).setValue(structure.wordCount);
-  }
-  sheet.getRange(row, lastFetchIdx + 1).setValue(new Date());
-  
-  Logger.log('ページ構造を保存しました: 行' + row);
-}
-
-/**
- * テスト: ページ構造取得
- */
-function testFetchPageStructure() {
-  var testUrl = '/iphonerepair-battery70-danger';
-  
-  Logger.log('=== ページ構造取得テスト ===');
-  
-  var structure = fetchPageStructure(testUrl);
-  
-  if (structure.success) {
-    Logger.log('タイトル: ' + structure.title);
-    Logger.log('H1: ' + structure.h1);
-    Logger.log('メタディスクリプション: ' + (structure.metaDescription || '').substring(0, 50) + '...');
-    Logger.log('H2数: ' + structure.h2List.length);
-    structure.h2List.forEach(function(h2, i) {
-      Logger.log('  H2-' + (i+1) + ': ' + h2);
-    });
-    Logger.log('推定文字数: ' + structure.wordCount);
-    Logger.log('画像数: ' + structure.hasImages);
-  } else {
-    Logger.log('エラー: ' + structure.error);
-  }
-  
-  Logger.log('=== テスト完了 ===');
-}
-
-// ============================================
-// コンテンツ生成機能
-// ============================================
-
-/**
- * 提案されたセクションのコンテンツを生成
- * @param {string} pageUrl - 対象ページURL
- * @param {string} sectionTitle - セクションタイトル
- * @param {string} sectionDetails - セクション詳細（箇条書き）
- * @return {Object} 生成結果
- */
-function generateSectionContent(pageUrl, sectionTitle, sectionDetails) {
-  Logger.log('=== コンテンツ生成開始 ===');
-  Logger.log('ページ: ' + pageUrl);
-  Logger.log('セクション: ' + sectionTitle);
-  
-  try {
-    // サイト情報を取得
-    var siteInfo = getSiteInfoFromSettings();
-    
-    // ページ構造を取得（エラーでも続行）
-    var pageStructure = null;
-    try {
-      pageStructure = getPageStructureCached(pageUrl);
-    } catch (e) {
-      Logger.log('ページ構造取得スキップ: ' + e.message);
-    }
-    
-    // 現在の日付
-    var today = new Date();
-    var currentYear = today.getFullYear();
-    var currentDate = Utilities.formatDate(today, 'Asia/Tokyo', 'yyyy年MM月dd日');
-    
-    // システムプロンプト
-    var systemPrompt = 'あなたはSEOに強いWebライターです。\n\n' +
-      '【重要：現在の日付】\n' +
-      '今日は' + currentDate + 'です。年号は' + currentYear + '年を使用してください。\n\n' +
-      '【サイト情報】\n' +
-      '- サイト名: ' + (siteInfo.siteName || '') + '\n' +
-      '- サイトタイプ: ' + (siteInfo.siteType || '') + '\n' +
-      '- ジャンル: ' + (siteInfo.siteGenre || '') + '\n\n' +
-      '【コンテンツ作成ルール】\n' +
-      '1. Markdown形式で出力\n' +
-      '2. 500〜1000文字程度\n' +
-      '3. H2見出しから始める\n' +
-      '4. 読者に価値のある具体的な情報を含める\n' +
-      '5. 箇条書きと文章をバランスよく使う\n' +
-      '6. SEOを意識したキーワード配置\n' +
-      '7. 読者の疑問に答える内容\n\n' +
-      '【出力形式】\n' +
-      '- H2見出しから開始\n' +
-      '- 必要に応じてH3を使用\n' +
-      '- 重要ポイントは太字（**テキスト**）\n' +
-      '- リストは「- 」で記述';
-    
-    // ページコンテキスト
-    var pageContext = '';
-    if (pageStructure && pageStructure.success) {
-      pageContext = '\n【対象ページ情報】\n' +
-        '- URL: ' + pageUrl + '\n' +
-        '- タイトル: ' + (pageStructure.title || '不明') + '\n' +
-        '- H1: ' + (pageStructure.h1 || '不明') + '\n';
-    }
-    
-    // ユーザープロンプト
-    var userPrompt = '以下のセクションのコンテンツを作成してください。' +
-      pageContext + '\n' +
-      '【作成するセクション】\n' +
-      sectionTitle + '\n\n' +
-      '【含めるべき内容】\n' +
-      sectionDetails + '\n\n' +
-      '【注意事項】\n' +
-      '- 上記の「含めるべき内容」を網羅してください\n' +
-      '- 具体的な数値やデータがあると説得力が増します\n' +
-      '- 読者がすぐに実践できる情報を心がけてください\n\n' +
-      'それでは、Markdown形式でコンテンツを作成してください：';
-    
-    // Claude API呼び出し
-    Logger.log('Claude API呼び出し開始...');
-    var content = callClaudeAPI(userPrompt, systemPrompt);
-    Logger.log('Claude API呼び出し成功');
-    
-    // 下書きシートに保存
-    var savedRow = saveContentDraft(pageUrl, sectionTitle, content);
-    
-    Logger.log('=== コンテンツ生成完了 ===');
-    
-    return {
-      success: true,
-      content: content,
-      savedRow: savedRow,
-      pageUrl: pageUrl,
-      sectionTitle: sectionTitle
-    };
-    
-  } catch (error) {
-    Logger.log('コンテンツ生成エラー: ' + error.message);
-    Logger.log('エラースタック: ' + error.stack);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
-}
-
-/**
- * コンテンツ生成用システムプロンプト
- */
-function buildContentGenerationSystemPrompt(siteInfo, pageStructure) {
-  var today = new Date();
-  var currentYear = today.getFullYear();
-  var currentDate = Utilities.formatDate(today, 'Asia/Tokyo', 'yyyy年MM月dd日');
-  
-  var existingH2 = '';
-  if (pageStructure && pageStructure.h2List && pageStructure.h2List.length > 0) {
-    existingH2 = '\n\n【既存のH2見出し】\n' + pageStructure.h2List.join('\n');
-  }
-  
-  return `あなたはSEOに強いWebライターです。
-
-【重要：現在の日付】
-今日は${currentDate}です。年号は${currentYear}年を使用してください。
-
-【サイト情報】
-- サイト名: ${siteInfo.siteName || ''}
-- サイトタイプ: ${siteInfo.siteType || ''}
-- ジャンル: ${siteInfo.siteGenre || ''}
-${existingH2}
-
-【コンテンツ作成ルール】
-1. Markdown形式で出力
-2. 500〜1000文字程度
-3. H2見出しから始める
-4. 読者に価値のある具体的な情報を含める
-5. 箇条書きと文章をバランスよく使う
-6. 既存コンテンツとトーンを合わせる
-7. SEOを意識したキーワード配置
-8. 読者の疑問に答える内容
-
-【出力形式】
-- H2見出しから開始
-- 必要に応じてH3を使用
-- 重要ポイントは太字（**テキスト**）
-- リストは「- 」で記述`;
-}
-
-/**
- * コンテンツ生成用ユーザープロンプト
- */
-function buildContentGenerationUserPrompt(pageUrl, sectionTitle, sectionDetails, pageData, pageStructure) {
-  var pageContext = '';
-  
-  if (pageStructure && pageStructure.success) {
-    pageContext = `
-【対象ページ情報】
-- URL: ${pageUrl}
-- タイトル: ${pageStructure.title || '不明'}
-- H1: ${pageStructure.h1 || '不明'}
+function getSuggestionFormatV2(gyronPosition) {
+  var baseFormat = `
+【提案形式】※必ずこの形式で出力してください
+
+## 🎯 リライト提案（優先度順）
+
+以下の形式で、優先度の高い順に3〜5個の提案を出力してください。
+
+### 🥇 優先度1: [提案タイトル]
+**種別**: [タイトル変更/メタディスクリプション/H2追加/本文追加/Q&A追加/画像追加/内部リンク追加]
+**現状**: [現在の状態を簡潔に]
+**改善案**: [具体的な改善内容]
+**理由**: [この提案を優先する理由と期待効果]
+
+### 🥈 優先度2: [提案タイトル]
+**種別**: [種別]
+**現状**: [現状]
+**改善案**: [改善案]
+**理由**: [理由]
+
+### 🥉 優先度3: [提案タイトル]
+**種別**: [種別]
+**現状**: [現状]
+**改善案**: [改善案]
+**理由**: [理由]
+
+（必要に応じて優先度4、5も追加）
 `;
+
+  if (!gyronPosition || gyronPosition <= 0) {
+    return baseFormat;
   }
   
-  var keywordInfo = '';
-  if (pageData && pageData.target_keyword) {
-    keywordInfo = `\n【ターゲットキーワード】\n${pageData.target_keyword}`;
+  if (gyronPosition === 1) {
+    return baseFormat + `
+【特別指示：1位獲得中】
+- タイトル変更は絶対に提案しないでください
+- 低リスク施策（内部リンク追加、関連コンテンツ新規作成）を優先してください`;
   }
   
-  return `以下のセクションのコンテンツを作成してください。
-${pageContext}${keywordInfo}
-
-【作成するセクション】
-${sectionTitle}
-
-【含めるべき内容】
-${sectionDetails}
-
-【注意事項】
-- 上記の「含めるべき内容」を網羅してください
-- 具体的な数値やデータがあると説得力が増します
-- 読者がすぐに実践できる情報を心がけてください
-
-それでは、Markdown形式でコンテンツを作成してください：`;
+  if (gyronPosition >= 2 && gyronPosition <= 5) {
+    return baseFormat + `
+【特別指示：上位表示中（${gyronPosition}位）】
+- タイトル変更は提案しないでください（リスク大）
+- メタディスクリプション改善、コンテンツ追記を優先してください`;
+  }
+  
+  if (gyronPosition >= 6 && gyronPosition <= 10) {
+    return baseFormat + `
+【特別指示：中位（${gyronPosition}位）】
+- 積極的な改善を提案してください
+- タイトル改善もOKです`;
+  }
+  
+  return baseFormat + `
+【特別指示：下位（${gyronPosition}位）】
+- 大幅な改善を提案してください
+- タイトル刷新、記事構成の見直しも検討してください`;
 }
-
 /**
- * コンテンツを下書きシートに保存
+ * 提案テキストに優先度別ボタンを追加
  */
-function saveContentDraft(pageUrl, sectionTitle, content) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('コンテンツ下書き');
+function addSuggestionButtons(suggestion, pageUrl) {
+  var sections = parsePrioritySuggestions(suggestion);
   
-  // シートがなければ作成
-  if (!sheet) {
-    sheet = ss.insertSheet('コンテンツ下書き');
-    sheet.appendRow([
-      'draft_id',
-      'page_url', 
-      'section_title', 
-      'content', 
-      'status',
-      'created_at',
-      'used_at',
-      'notes'
-    ]);
-    
-    // ヘッダー行の書式設定
-    sheet.getRange(1, 1, 1, 8).setFontWeight('bold').setBackground('#4a90d9').setFontColor('#ffffff');
-    sheet.setFrozenRows(1);
-    
-    // 列幅設定
-    sheet.setColumnWidth(1, 100);  // draft_id
-    sheet.setColumnWidth(2, 250);  // page_url
-    sheet.setColumnWidth(3, 200);  // section_title
-    sheet.setColumnWidth(4, 500);  // content
-    sheet.setColumnWidth(5, 80);   // status
-    sheet.setColumnWidth(6, 150);  // created_at
-    sheet.setColumnWidth(7, 150);  // used_at
-    sheet.setColumnWidth(8, 200);  // notes
-  }
-  
-  // draft_id生成
-  var now = new Date();
-  var draftId = 'DRAFT-' + Utilities.formatDate(now, 'Asia/Tokyo', 'yyyyMMdd-HHmmss');
-  
-  // データ追加
-  var newRow = [
-    draftId,
-    pageUrl,
-    sectionTitle,
-    content,
-    '下書き',
-    now,
-    '',
-    ''
-  ];
-  
-  sheet.appendRow(newRow);
-  
-  var lastRow = sheet.getLastRow();
-  Logger.log('下書き保存完了: 行' + lastRow + ', ID=' + draftId);
-  
-  return lastRow;
-}
-
-/**
- * 提案テキストにコンテンツ生成ボタンを追加（各セクション直後）
- * @param {string} suggestion - AI提案テキスト
- * @param {string} pageUrl - ページURL
- * @return {string} ボタン付き提案テキスト
- */
-function addContentGenerationButtons(suggestion, pageUrl) {
-  // 「追加すべきコンテンツ」セクションを検出
-  var sections = parseContentSuggestions(suggestion);
-  
-  Logger.log('検出されたセクション数: ' + sections.length);
+  Logger.log('検出された優先度提案数: ' + sections.length);
   
   if (sections.length === 0) {
     return suggestion;
   }
   
-  // 各セクションの後にボタンを挿入
   var modifiedSuggestion = suggestion;
   
-  // 逆順で処理（後ろから挿入することで位置がズレない）
   for (var i = sections.length - 1; i >= 0; i--) {
     var section = sections[i];
-    Logger.log('セクション' + (i + 1) + ': ' + section.title);
     
-    var buttonHtml = '\n<button class="generate-content-btn" ' +
-                     'data-page-url="' + escapeHtml(pageUrl) + '" ' +
-                     'data-section-title="' + escapeHtml(section.title) + '" ' +
-                     'data-section-details="' + escapeHtml(section.details) + '">' +
-                     '📝 このコンテンツを作成</button>\n';
+    var buttonHtml = '\n\n<div class="suggestion-buttons" data-priority="' + section.priority + '">' +
+                     '<button class="generate-outline-btn" ' +
+                     'data-page-url="' + escapeHtmlAttr(pageUrl) + '" ' +
+                     'data-suggestion-title="' + escapeHtmlAttr(section.title) + '" ' +
+                     'data-suggestion-type="' + escapeHtmlAttr(section.type) + '" ' +
+                     'data-suggestion-content="' + escapeHtmlAttr(section.content) + '">' +
+                     '📝 アウトラインを生成</button> ' +
+                     '<button class="add-task-btn" ' +
+                     'data-page-url="' + escapeHtmlAttr(pageUrl) + '" ' +
+                     'data-task-type="' + escapeHtmlAttr(section.type) + '" ' +
+                     'data-task-content="' + escapeHtmlAttr(section.content) + '" ' +
+                     'data-priority="' + section.priority + '">' +
+                     '➕ タスクに追加</button>' +
+                     '</div>\n';
     
-    // セクションの終了位置を見つけて挿入
-    if (section.endIndex > 0) {
+    if (section.endIndex > 0 && section.endIndex <= modifiedSuggestion.length) {
       modifiedSuggestion = modifiedSuggestion.substring(0, section.endIndex) + 
                            buttonHtml + 
                            modifiedSuggestion.substring(section.endIndex);
@@ -3432,117 +1586,151 @@ function addContentGenerationButtons(suggestion, pageUrl) {
   return modifiedSuggestion;
 }
 
+
 /**
- * 提案から追加コンテンツセクションを解析
+ * 優先度付き提案を解析
  */
-function parseContentSuggestions(suggestion) {
+function parsePrioritySuggestions(suggestion) {
   var sections = [];
+  var priorityPattern = /###\s*\S*\s*優先度(\d+)[：:]\s*(.+?)(?=\n)/g;
+  var match;
   
-  // 「追加すべきコンテンツ」の位置を検出
-  var addContentStart = suggestion.search(/追加すべきコンテンツ/i);
-  
-  if (addContentStart === -1) {
-    Logger.log('「追加すべきコンテンツ」セクションが見つかりません');
-    return sections;
-  }
-  
-  var addContentSection = suggestion.substring(addContentStart);
-  Logger.log('追加コンテンツセクション検出');
-  
-  // ### で始まるサブセクションを抽出
-  var lines = addContentSection.split('\n');
-  var currentTitle = '';
-  var currentDetails = [];
-  var currentStartIndex = -1;
-  var absoluteIndex = addContentStart;
-  
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
-    var trimmedLine = line.trim();
+  while ((match = priorityPattern.exec(suggestion)) !== null) {
+    var priority = parseInt(match[1]);
+    var title = match[2].trim();
+    var startIndex = match.index;
     
-    // ### で始まる見出しを検出（または①②③などの番号付き）
-    var isHeading = trimmedLine.match(/^###\s+/) || trimmedLine.match(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/);
-    
-    if (isHeading) {
-      // 前のセクションを保存
-      if (currentTitle && currentDetails.length > 0) {
-        sections.push({
-          title: currentTitle,
-          details: currentDetails.join('\n'),
-          endIndex: absoluteIndex
-        });
-      }
-      // 新しいセクション開始
-      currentTitle = trimmedLine.replace(/^###\s+/, '').replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').trim();
-      currentDetails = [];
-      currentStartIndex = absoluteIndex;
-    }
-    // 次の ## が来たら終了（追加すべきコンテンツセクション終了）
-    else if (trimmedLine.match(/^##\s+/) && currentTitle) {
-      // 前のセクションを保存して終了
-      if (currentDetails.length > 0) {
-        sections.push({
-          title: currentTitle,
-          details: currentDetails.join('\n'),
-          endIndex: absoluteIndex
-        });
-      }
-      break;
-    }
-    // 詳細行を追加（箇条書きの行）
-    else if (currentTitle && trimmedLine && (trimmedLine.startsWith('-') || trimmedLine.startsWith('・') || trimmedLine.match(/^\d+\./))) {
-      currentDetails.push(trimmedLine);
+    if (sections.length > 0) {
+      sections[sections.length - 1].endIndex = startIndex;
     }
     
-    absoluteIndex += line.length + 1; // +1 for newline
-  }
-  
-  // 最後のセクションを保存
-  if (currentTitle && currentDetails.length > 0) {
+    var contentStart = match.index + match[0].length;
+    var nextSection = suggestion.indexOf('### ', contentStart);
+    var contentEnd = nextSection > 0 ? nextSection : suggestion.length;
+    var sectionContent = suggestion.substring(contentStart, contentEnd).trim();
+    
+    var typeMatch = sectionContent.match(/\*\*種別\*\*[：:]\s*(.+?)(?:\n|$)/);
+    var type = typeMatch ? typeMatch[1].trim() : title;
+    
+    var improvementMatch = sectionContent.match(/\*\*改善案\*\*[：:]\s*([\s\S]+?)(?=\*\*|$)/);
+    var improvement = improvementMatch ? improvementMatch[1].trim() : sectionContent.substring(0, 200);
+    
     sections.push({
-      title: currentTitle,
-      details: currentDetails.join('\n'),
-      endIndex: absoluteIndex
+      priority: priority,
+      title: title,
+      type: type,
+      content: improvement,
+      startIndex: startIndex,
+      endIndex: contentEnd
     });
   }
   
-  Logger.log('解析完了: ' + sections.length + 'セクション');
+  if (sections.length > 0 && !sections[sections.length - 1].endIndex) {
+    sections[sections.length - 1].endIndex = suggestion.length;
+  }
   
   return sections;
 }
 
+
 /**
- * HTMLエスケープ
+ * HTML属性用エスケープ
  */
-function escapeHtml(text) {
+function escapeHtmlAttr(text) {
   if (!text) return '';
   return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replace(/'/g, '&#39;')
+    .replace(/\n/g, ' ');
+}
+/**
+ * 軽量アウトライン生成
+ */
+function generateOutline(pageUrl, suggestionTitle, suggestionType, suggestionContent) {
+  Logger.log('=== アウトライン生成開始 ===');
+  
+  try {
+    var siteInfo = getSiteInfoFromSettings();
+    var today = new Date();
+    var currentYear = today.getFullYear();
+    
+    var systemPrompt = 'あなたはSEOコンテンツのアウトライン作成の専門家です。\n\n' +
+      '【重要】\n' +
+      '- 現在は' + currentYear + '年です\n' +
+      '- 軽量で実行しやすいアウトラインを作成してください\n' +
+      '- 詳細な本文は書かず、構成案のみを出力してください\n\n' +
+      '【サイト情報】\n' +
+      '- サイト名: ' + (siteInfo.siteName || '') + '\n' +
+      '- ジャンル: ' + (siteInfo.siteGenre || '');
+    
+    var userPrompt = '以下の提案に基づいて、コンテンツアウトラインを作成してください。\n\n' +
+      '【ページURL】\n' + pageUrl + '\n\n' +
+      '【提案種別】\n' + suggestionType + '\n\n' +
+      '【提案タイトル】\n' + suggestionTitle + '\n\n' +
+      '【提案内容】\n' + suggestionContent + '\n\n' +
+      '【出力形式】\n' +
+      '## 📝 コンテンツアウトライン: [セクション名]\n\n' +
+      '【H2案】\n[具体的な見出し案]\n\n' +
+      '【含めるべき内容】\n- 項目1\n- 項目2\n- 項目3\n- 項目4\n\n' +
+      '【参考データ】\n- 参照すべき情報源1\n- 参照すべき情報源2\n\n' +
+      '【想定文字数】\n[推奨文字数]';
+    
+    var outline = callClaudeAPI(userPrompt, systemPrompt);
+    
+    return { success: true, outline: outline, pageUrl: pageUrl, suggestionType: suggestionType };
+    
+  } catch (error) {
+    Logger.log('アウトライン生成エラー: ' + error.message);
+    return { success: false, error: error.message };
+  }
 }
 
+
 /**
- * テスト: コンテンツ生成
+ * 提案をタスク管理シートに登録
  */
-function testGenerateSectionContent() {
-  var testPageUrl = '/purchase-ipad-refurbished-apple';
-  var testSectionTitle = '実体験レビューセクション';
-  var testDetails = '- 実際の購入体験談\n- 開封時の写真・レビュー\n- 新品との比較画像';
+function registerTaskFromSuggestion(pageUrl, taskType, taskContent, priority) {
+  Logger.log('=== タスク登録開始 ===');
   
-  Logger.log('=== コンテンツ生成テスト ===');
-  
-  var result = generateSectionContent(testPageUrl, testSectionTitle, testDetails);
-  
-  if (result.success) {
-    Logger.log('生成成功！');
-    Logger.log('保存行: ' + result.savedRow);
-    Logger.log('コンテンツ（先頭500文字）:\n' + result.content.substring(0, 500));
-  } else {
-    Logger.log('生成失敗: ' + result.error);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('タスク管理');
+    
+    // シートがなければ作成
+    if (!sheet) {
+      sheet = ss.insertSheet('タスク管理');
+      sheet.appendRow(['task_id', 'page_url', 'task_type', 'task_content', 'priority', 'status', 'created_at', 'completed_at', 'notes']);
+      sheet.getRange(1, 1, 1, 9).setFontWeight('bold').setBackground('#4a90d9').setFontColor('#ffffff');
+      sheet.setFrozenRows(1);
+    }
+    
+    var now = new Date();
+    var dateStr = Utilities.formatDate(now, 'Asia/Tokyo', 'yyyyMMdd');
+    
+    var data = sheet.getDataRange().getValues();
+    var todayCount = 0;
+    for (var i = 1; i < data.length; i++) {
+      var taskId = data[i][0] || '';
+      if (taskId.indexOf('TASK-' + dateStr) === 0) todayCount++;
+    }
+    
+    var taskId = 'TASK-' + dateStr + '-' + String(todayCount + 1).padStart(3, '0');
+    
+    // 重複チェック
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][1] === pageUrl && data[i][2] === taskType && data[i][5] !== '完了') {
+        return { success: false, error: '同じタスクが既に存在します', existingTaskId: data[i][0] };
+      }
+    }
+    
+    sheet.appendRow([taskId, pageUrl, taskType, taskContent, priority, '未着手', now, '', 'AI提案から登録']);
+    
+    return { success: true, taskId: taskId, row: sheet.getLastRow() };
+    
+  } catch (error) {
+    return { success: false, error: error.message };
   }
-  
-  Logger.log('=== テスト完了 ===');
 }

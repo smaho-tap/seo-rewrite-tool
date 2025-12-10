@@ -681,7 +681,19 @@ function normalizeUrl(url) {
 }
 
 /**
- * Clarityレスポンスをパース（修正版）
+ * Clarityレスポンスをパース
+ * 
+ * APIレスポンス構造:
+ * [
+ *   {
+ *     "metricName": "Dead Click Count",
+ *     "information": [
+ *       { "URL": "/page1", "deadClickCount": 5 },
+ *       { "URL": "/page2", "deadClickCount": 3 }
+ *     ]
+ *   },
+ *   ...
+ * ]
  * 
  * @param {Object} rawData - APIレスポンス
  * @return {Array} パース済みデータ配列
@@ -707,7 +719,7 @@ function parseClarityResponse(rawData) {
     Logger.log('  処理中: ' + metricName + ' (' + metric.information.length + ' URL)');
     
     metric.information.forEach(item => {
-      // URLフィールドを取得
+      // URLフィールドを取得（Url、URL、urlの順に試す）
       const rawUrl = item.Url || item.URL || item.url;
       if (!rawUrl) return;
       
@@ -729,55 +741,47 @@ function parseClarityResponse(rawData) {
         };
       }
       
-      // メトリクスを格納（修正版：各メトリクスの正しいキーを使用）
+      // メトリクス値はsubTotalに格納されている
+      const value = item.subTotal || item.value || 0;
+      
+      // メトリクスを格納
       switch (metricName) {
         case 'DeadClickCount':
-          result[url].dead_clicks = parseInt(item.subTotal) || 0;
-          // sessionsCountも取得
-          if (item.sessionsCount && parseInt(item.sessionsCount) > result[url].sessions) {
+        case 'Dead Click Count':
+          result[url].dead_clicks = parseFloat(value);
+          break;
+          
+        case 'Rage Click Count':
+          result[url].rage_clicks = parseFloat(value);
+          break;
+          
+        case 'Quickback Click':
+          result[url].quick_backs = parseFloat(value);
+          break;
+          
+        case 'Scroll Depth':
+          // スクロール深度は%で返される可能性があるので処理
+          const scrollDepth = value.toString().replace('%', '');
+          result[url].avg_scroll_depth = parseFloat(scrollDepth);
+          break;
+          
+        case 'Engagement Time':
+          result[url].engagement_time = parseFloat(value);
+          // セッション数も取得
+          if (item.sessionsCount) {
             result[url].sessions = parseInt(item.sessionsCount);
           }
           break;
           
-        case 'RageClickCount':
-          result[url].rage_clicks = parseInt(item.subTotal) || 0;
-          if (item.sessionsCount && parseInt(item.sessionsCount) > result[url].sessions) {
-            result[url].sessions = parseInt(item.sessionsCount);
-          }
-          break;
-          
-        case 'QuickbackClick':
-          result[url].quick_backs = parseInt(item.subTotal) || 0;
-          if (item.sessionsCount && parseInt(item.sessionsCount) > result[url].sessions) {
-            result[url].sessions = parseInt(item.sessionsCount);
-          }
-          break;
-          
-        case 'ScrollDepth':
-          // averageScrollDepthキーから取得
-          result[url].avg_scroll_depth = parseFloat(item.averageScrollDepth) || 0;
-          break;
-          
-        case 'EngagementTime':
-          // activeTimeを使用（実際のアクティブ時間）
-          result[url].engagement_time = parseInt(item.activeTime) || parseInt(item.totalTime) || 0;
+        case 'Script Error Count':
+          result[url].script_errors = parseFloat(value);
           break;
           
         case 'Traffic':
-          // totalSessionCountからセッション数を取得
-          const sessionCount = parseInt(item.totalSessionCount) || 0;
-          if (sessionCount > result[url].sessions) {
-            result[url].sessions = sessionCount;
+          // セッション数を取得
+          if (item.sessionsCount) {
+            result[url].sessions = parseInt(item.sessionsCount);
           }
-          break;
-          
-        case 'ScriptErrorCount':
-          result[url].script_errors = parseInt(item.subTotal) || 0;
-          break;
-          
-        case 'ErrorClickCount':
-          // エラークリックはscript_errorsに加算
-          result[url].script_errors += parseInt(item.subTotal) || 0;
           break;
       }
     });
@@ -1943,66 +1947,4 @@ function debugClarityRawColumns() {
   dataRows.forEach((row, rowIndex) => {
     Logger.log(`行${rowIndex + 2}: ${row.join(' | ')}`);
   });
-}
-
-/**
- * Clarity APIレスポンスのデバッグ
- */
-function debugClarityAPIResponse() {
-  const token = PropertiesService.getScriptProperties().getProperty('CLARITY_API_TOKEN');
-  
-  if (!token) {
-    Logger.log('❌ トークンが設定されていません');
-    return;
-  }
-  
-  const apiUrl = 'https://www.clarity.ms/export-data/api/v1/project-live-insights';
-  const params = {
-    numOfDays: 3,
-    dimension1: 'URL'
-  };
-  
-  const url = apiUrl + '?' + Object.keys(params).map(key => 
-    key + '=' + encodeURIComponent(params[key])
-  ).join('&');
-  
-  const options = {
-    method: 'GET',
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'Content-Type': 'application/json'
-    },
-    muteHttpExceptions: true
-  };
-  
-  try {
-    const response = UrlFetchApp.fetch(url, options);
-    const statusCode = response.getResponseCode();
-    Logger.log('ステータスコード: ' + statusCode);
-    
-    if (statusCode === 200) {
-      const data = JSON.parse(response.getContentText());
-      
-      Logger.log('=== APIレスポンス構造 ===');
-      Logger.log('メトリクス数: ' + data.length);
-      
-      data.forEach((metric, index) => {
-        Logger.log('\n--- メトリクス ' + (index + 1) + ' ---');
-        Logger.log('metricName: ' + metric.metricName);
-        Logger.log('information件数: ' + (metric.information ? metric.information.length : 0));
-        
-        // 最初の2件のサンプルデータを表示
-        if (metric.information && metric.information.length > 0) {
-          Logger.log('サンプルデータ:');
-          metric.information.slice(0, 2).forEach(item => {
-            Logger.log('  ' + JSON.stringify(item));
-          });
-        }
-      });
-    } else {
-      Logger.log('エラー: ' + response.getContentText());
-    }
-  } catch (error) {
-    Logger.log('❌ エラー: ' + error.message);
-  }
 }

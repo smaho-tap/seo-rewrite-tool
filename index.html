@@ -214,32 +214,6 @@
       border: 1px solid #EF5350;
     }
     
-    /* コンテンツ生成ボタン */
-    .generate-content-btn {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      border: none;
-      padding: 8px 16px;
-      border-radius: 20px;
-      cursor: pointer;
-      font-size: 14px;
-      margin: 10px 0;
-      transition: all 0.3s ease;
-      display: inline-block;
-    }
-    
-    .generate-content-btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-    }
-    
-    .generate-content-btn:disabled {
-      background: #ccc;
-      cursor: not-allowed;
-      transform: none;
-      box-shadow: none;
-    }
-    
     /* レスポンシブ */
     @media (max-width: 768px) {
       #app {
@@ -299,6 +273,104 @@
     #chat-area::-webkit-scrollbar-thumb:hover {
       background: #81D4FA;
     }
+    /* ============================================
+       フェーズ1追加: 提案ボタンスタイル
+       ============================================ */
+    
+    .suggestion-buttons {
+      margin: 12px 0;
+      padding: 10px 0;
+      border-top: 1px dashed #E0E0E0;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    
+    .generate-outline-btn {
+      background: linear-gradient(135deg, #00BCD4 0%, #0097A7 100%);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      box-shadow: 0 2px 8px rgba(0, 188, 212, 0.3);
+    }
+    
+    .generate-outline-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 188, 212, 0.4);
+    }
+    
+    .generate-outline-btn:disabled {
+      background: #B0BEC5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    
+    .add-task-btn {
+      background: linear-gradient(135deg, #4CAF50 0%, #388E3C 100%);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+    }
+    
+    .add-task-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+    }
+    
+    .add-task-btn:disabled {
+      background: #B0BEC5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .view-detail-btn {
+      background: linear-gradient(135deg, #FF9800 0%, #F57C00 100%);
+      color: white;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 16px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      box-shadow: 0 2px 6px rgba(255, 152, 0, 0.3);
+      margin-left: 10px;
+    }
+    
+    .view-detail-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 10px rgba(255, 152, 0, 0.4);
+    }
+    
+    .view-detail-btn:disabled {
+      background: #B0BEC5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    
+    @media (max-width: 768px) {
+      .suggestion-buttons {
+        flex-direction: column;
+      }
+      .generate-outline-btn, .add-task-btn {
+        width: 100%;
+        justify-content: center;
+      }
+    }
   </style>
 </head>
 <body>
@@ -339,47 +411,6 @@
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
-      }
-    });
-    
-    // コンテンツ生成ボタンのイベント処理
-    document.addEventListener('click', function(e) {
-      if (e.target.classList.contains('generate-content-btn')) {
-        var btn = e.target;
-        var pageUrl = btn.getAttribute('data-page-url');
-        var sectionTitle = btn.getAttribute('data-section-title');
-        var sectionDetails = btn.getAttribute('data-section-details');
-        
-        // ボタンを無効化
-        btn.disabled = true;
-        btn.textContent = '⏳ 生成中...';
-        
-        // コンテンツ生成リクエストを送信
-        var requestData = {
-          pageUrl: pageUrl,
-          sectionTitle: sectionTitle,
-          sectionDetails: sectionDetails
-        };
-        
-        var message = '__GENERATE_CONTENT__' + JSON.stringify(requestData);
-        
-        // ローディング表示
-        showLoading();
-        
-        // メッセージ送信
-        google.script.run
-          .withSuccessHandler(function(response) {
-            hideLoading();
-            displayAIMessage(response);
-            btn.textContent = '✅ 生成完了';
-          })
-          .withFailureHandler(function(error) {
-            hideLoading();
-            displayErrorMessage('エラー: ' + error.message);
-            btn.disabled = false;
-            btn.textContent = '📝 このコンテンツを作成';
-          })
-          .handleChatMessage(message);
       }
     });
     
@@ -475,18 +506,43 @@
     }
     
     function formatMessage(text) {
-      // HTMLタグを許可（ボタン用）
-      // ただしscriptタグは除外
-      text = text.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+      // ボタンやdivタグを一時的に退避
+      var buttonPlaceholders = [];
+      var placeholderIndex = 0;
       
-      // 改行を<br>に変換（ただしHTMLタグ内は除く）
-      var parts = text.split(/(<[^>]+>)/);
-      for (var i = 0; i < parts.length; i++) {
-        if (!parts[i].startsWith('<')) {
-          parts[i] = escapeHtml(parts[i]).replace(/\n/g, '<br>');
-        }
+      // <div class="suggestion-buttons"...>...</div> を退避
+      text = text.replace(/<div class="suggestion-buttons"[\s\S]*?<\/div>/g, function(match) {
+        var placeholder = '___BUTTON_PLACEHOLDER_' + placeholderIndex + '___';
+        buttonPlaceholders.push({ placeholder: placeholder, html: match });
+        placeholderIndex++;
+        return placeholder;
+      });
+      
+      // <button class="view-detail-btn"...>...</button> を退避
+      text = text.replace(/<button class="view-detail-btn"[^>]*>.*?<\/button>/g, function(match) {
+        var placeholder = '___BUTTON_PLACEHOLDER_' + placeholderIndex + '___';
+        buttonPlaceholders.push({ placeholder: placeholder, html: match });
+        placeholderIndex++;
+        return placeholder;
+      });
+      
+      // 通常のテキストをエスケープ
+      text = escapeHtml(text);
+      
+      // 改行を<br>に変換
+      text = text.replace(/\n/g, '<br>');
+      
+      // Markdown風の装飾
+      text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      text = text.replace(/### (.+?)(<br>|$)/g, '<h4>$1</h4>');
+      text = text.replace(/## (.+?)(<br>|$)/g, '<h3>$1</h3>');
+      
+      // ボタンを復元
+      for (var i = 0; i < buttonPlaceholders.length; i++) {
+        text = text.replace(buttonPlaceholders[i].placeholder, buttonPlaceholders[i].html);
       }
-      return parts.join('');
+      
+      return text;
     }
     
     // 初期化時にスクロール
@@ -494,6 +550,109 @@
       scrollToBottom();
       document.getElementById('user-input').focus();
     };
+    // ============================================
+    // フェーズ1追加: アウトライン生成・タスク追加ボタン
+    // ============================================
+    
+    // アウトライン生成ボタン
+    document.addEventListener('click', function(e) {
+      if (e.target.classList.contains('generate-outline-btn')) {
+        var btn = e.target;
+        var requestData = {
+          pageUrl: btn.getAttribute('data-page-url'),
+          suggestionTitle: btn.getAttribute('data-suggestion-title'),
+          suggestionType: btn.getAttribute('data-suggestion-type'),
+          suggestionContent: btn.getAttribute('data-suggestion-content')
+        };
+        
+        btn.disabled = true;
+        var originalText = btn.textContent;
+        btn.textContent = '⏳ 生成中...';
+        
+        showLoading();
+        
+        google.script.run
+          .withSuccessHandler(function(response) {
+            hideLoading();
+            displayAIMessage(response);
+            btn.textContent = '✅ 生成完了';
+            setTimeout(function() { btn.textContent = originalText; btn.disabled = false; }, 5000);
+          })
+          .withFailureHandler(function(error) {
+            hideLoading();
+            displayErrorMessage('エラー: ' + error.message);
+            btn.disabled = false;
+            btn.textContent = originalText;
+          })
+          .handleChatMessage('__GENERATE_OUTLINE__' + JSON.stringify(requestData));
+      }
+    });
+    
+    // タスク追加ボタン
+    document.addEventListener('click', function(e) {
+      if (e.target.classList.contains('add-task-btn')) {
+        var btn = e.target;
+        var pageUrl = btn.getAttribute('data-page-url');
+        var taskType = btn.getAttribute('data-task-type');
+        var priority = parseInt(btn.getAttribute('data-priority')) || 3;
+        
+        if (!confirm('タスクを登録しますか？\n\nページ: ' + pageUrl + '\n種別: ' + taskType)) return;
+        
+        var requestData = {
+          pageUrl: pageUrl,
+          taskType: taskType,
+          taskContent: btn.getAttribute('data-task-content'),
+          priority: priority
+        };
+        
+        btn.disabled = true;
+        btn.textContent = '⏳ 登録中...';
+        
+        showLoading();
+        
+        google.script.run
+          .withSuccessHandler(function(response) {
+            hideLoading();
+            displayAIMessage(response);
+            btn.textContent = '✅ 登録完了';
+          })
+          .withFailureHandler(function(error) {
+            hideLoading();
+            displayErrorMessage('エラー: ' + error.message);
+            btn.disabled = false;
+            btn.textContent = '➕ タスクに追加';
+          })
+          .handleChatMessage('__ADD_TASK__' + JSON.stringify(requestData));
+      }
+    });
+    // 詳細を見るボタン
+    document.addEventListener('click', function(e) {
+      if (e.target.classList.contains('view-detail-btn')) {
+        var btn = e.target;
+        var pageUrl = btn.getAttribute('data-page-url');
+        
+        btn.disabled = true;
+        var originalText = btn.textContent;
+        btn.textContent = '⏳ 読込中...';
+        
+        showLoading();
+        
+        google.script.run
+          .withSuccessHandler(function(response) {
+            hideLoading();
+            displayAIMessage(response);
+            btn.textContent = '✅ 表示済み';
+            setTimeout(function() { btn.textContent = originalText; btn.disabled = false; }, 3000);
+          })
+          .withFailureHandler(function(error) {
+            hideLoading();
+            displayErrorMessage('エラー: ' + error.message);
+            btn.disabled = false;
+            btn.textContent = originalText;
+          })
+          .handleChatMessage('__VIEW_DETAIL__' + pageUrl);
+      }
+    });
   </script>
 </body>
 </html>
