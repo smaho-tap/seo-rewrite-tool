@@ -27,7 +27,7 @@
  * AIO順位追跡を有効化するフラグ
  * false にするとAIO処理をスキップ（コスト削減）
  */
-const ENABLE_AIO_TRACKING = true;
+const ENABLE_AIO_TRACKING = false;
 
 // ============================================================
 // テスト関数

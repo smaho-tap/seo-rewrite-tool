@@ -166,10 +166,14 @@ function writeToGA4Sheet(data) {
     sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
   }
   
-  // データ書き込み（バッチ処理）
+  // データ書き込み（上書き方式）
   if (data.length > 0) {
-    const startRow = sheet.getLastRow() + 1;
-    sheet.getRange(startRow, 1, data.length, data[0].length).setValues(data);
+    // 既存データをクリア（ヘッダー以外）
+    if (sheet.getLastRow() > 1) {
+      sheet.deleteRows(2, sheet.getLastRow() - 1);
+    }
+    // 新しいデータを書き込み
+    sheet.getRange(2, 1, data.length, data[0].length).setValues(data);
     
     Logger.log(`${data.length}行をGA4_RAWシートに書き込みました`);
   }
@@ -303,10 +307,14 @@ function writeToGSCSheet(data) {
     sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
   }
   
-  // データ書き込み（バッチ処理）
+  // データ書き込み（上書き方式）
   if (data.length > 0) {
-    const startRow = sheet.getLastRow() + 1;
-    sheet.getRange(startRow, 1, data.length, data[0].length).setValues(data);
+    // 既存データをクリア（ヘッダー以外）
+    if (sheet.getLastRow() > 1) {
+      sheet.deleteRows(2, sheet.getLastRow() - 1);
+    }
+    // 新しいデータを書き込み
+    sheet.getRange(2, 1, data.length, data[0].length).setValues(data);
     
     Logger.log(`${data.length}行をGSC_RAWシートに書き込みました`);
   }
@@ -830,10 +838,14 @@ function integrateData() {
       ]);
     });
     
-    // バッチ書き込み
+    // バッチ書き込み（上書き方式）
     if (outputData.length > 0) {
-      const startRow = integratedSheet.getLastRow() + 1;
-      integratedSheet.getRange(startRow, 1, outputData.length, outputData[0].length)
+      // 既存データをクリア（ヘッダー以外）
+      if (integratedSheet.getLastRow() > 1) {
+        integratedSheet.deleteRows(2, integratedSheet.getLastRow() - 1);
+      }
+      // 新しいデータを書き込み
+      integratedSheet.getRange(2, 1, outputData.length, outputData[0].length)
         .setValues(outputData);
       
       Logger.log(`${outputData.length}行を統合データシートに書き込みました`);
