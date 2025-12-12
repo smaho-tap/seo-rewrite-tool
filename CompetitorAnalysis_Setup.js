@@ -281,3 +281,9 @@ function setupAllCredentials() {
   Logger.log('=== 初期設定完了 ===');
   Logger.log('次のステップ: testAPIConnections() を実行して接続確認');
 }
+function showAPIKeys() {
+  const props = PropertiesService.getScriptProperties();
+  Logger.log('DATAFORSEO_LOGIN: ' + props.getProperty('DATAFORSEO_LOGIN'));
+  Logger.log('DATAFORSEO_PASSWORD: ' + props.getProperty('DATAFORSEO_PASSWORD'));
+  Logger.log('MOZ_API_KEY: ' + props.getProperty('MOZ_API_KEY'));
+}

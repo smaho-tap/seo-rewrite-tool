@@ -33,9 +33,9 @@ function runDailySupabaseUpdate() {
     return;
   }
   
-  // ページマッピング取得
+  // ページマッピング取得（投稿ページのみ）
   const pageMapping = getPageMappingForDaily(serviceRoleKey);
-  Logger.log(`ページマッピング: ${Object.keys(pageMapping).length}件`);
+  Logger.log(`ページマッピング: ${Object.keys(pageMapping).length}件（投稿ページのみ）`);
   
   // 前日の日付
   const yesterday = new Date();
@@ -65,9 +65,11 @@ function runDailySupabaseUpdate() {
 
 /**
  * ページマッピング取得（path → page_id）
+ * ★ status=active（投稿ページ）のみ取得
  */
 function getPageMappingForDaily(serviceRoleKey) {
-  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/pages?site_id=eq.${DAILY_CONFIG.SITE_ID}&select=id,path`;
+  // status=eq.active で投稿ページのみフィルタリング
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/pages?site_id=eq.${DAILY_CONFIG.SITE_ID}&status=eq.active&select=id,path`;
   
   const response = UrlFetchApp.fetch(url, {
     method: 'get',
@@ -132,7 +134,7 @@ function fetchAndSaveGA4Daily(serviceRoleKey, pageMapping, dateStr) {
     }
     
     const pageId = pageMapping[pagePath];
-    if (!pageId) return;
+    if (!pageId) return;  // 投稿ページ以外はスキップ
     
     records.push({
       page_id: pageId,
@@ -202,7 +204,7 @@ function fetchAndSaveGSCDaily(serviceRoleKey, pageMapping, dateStr) {
     }
     
     const pageId = pageMapping[path];
-    if (!pageId) return;
+    if (!pageId) return;  // 投稿ページ以外はスキップ
     
     records.push({
       page_id: pageId,
