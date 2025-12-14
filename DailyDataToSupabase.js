@@ -59,7 +59,14 @@ function runDailySupabaseUpdate() {
   } catch (e) {
     Logger.log(`❌ GSCエラー: ${e.message}`);
   }
-  
+
+  // WordPress投稿日同期
+  try {
+    const wpCount = syncWordPressPublishDates(serviceRoleKey);
+    Logger.log(`✅ WordPress投稿日同期: ${wpCount}件更新`);
+  } catch (e) {
+    Logger.log(`❌ WordPress同期エラー: ${e.message}`);
+  }
   Logger.log('=== 日次更新完了 ===');
 }
 
@@ -331,4 +338,155 @@ function testDailyUpdateForDate() {
   
   const gscCount = fetchAndSaveGSCDaily(serviceRoleKey, pageMapping, testDate);
   Logger.log(`GSC: ${gscCount}件`);
+}
+
+/**
+ * WordPress REST APIから投稿日を取得してSupabaseに同期
+ * 新規記事（first_published_atがnull）のみ更新
+ */
+function syncWordPressPublishDates(serviceRoleKey) {
+  Logger.log('--- WordPress投稿日同期開始 ---');
+  
+  // 1. Supabaseからfirst_published_atがnullのページを取得
+  const pagesUrl = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/pages?site_id=eq.${DAILY_CONFIG.SITE_ID}&status=eq.active&first_published_at=is.null&select=id,path`;
+  
+  const pagesResponse = UrlFetchApp.fetch(pagesUrl, {
+    method: 'get',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json'
+    },
+    muteHttpExceptions: true
+  });
+  
+  if (pagesResponse.getResponseCode() !== 200) {
+    throw new Error(`ページ取得エラー: ${pagesResponse.getContentText()}`);
+  }
+  
+  const pagesWithoutDate = JSON.parse(pagesResponse.getContentText());
+  
+  if (pagesWithoutDate.length === 0) {
+    Logger.log('投稿日未設定のページはありません');
+    return 0;
+  }
+  
+  Logger.log(`投稿日未設定ページ: ${pagesWithoutDate.length}件`);
+  
+  // 2. WordPress REST APIから全記事を取得
+  const wpPosts = fetchAllWordPressPosts();
+  Logger.log(`WordPress記事数: ${wpPosts.length}件`);
+  
+  // 3. slugでマッチングして更新
+  let updatedCount = 0;
+  
+  pagesWithoutDate.forEach(page => {
+    // pathからslugを抽出（先頭の/を除去）
+    let slug = page.path;
+    if (slug.startsWith('/')) {
+      slug = slug.substring(1);
+    }
+    
+    // WordPressの記事を検索
+    const wpPost = wpPosts.find(post => post.slug === slug);
+    
+    if (wpPost && wpPost.published_date) {
+      // Supabaseを更新
+      const updateUrl = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/pages?id=eq.${page.id}`;
+      
+      const updateResponse = UrlFetchApp.fetch(updateUrl, {
+        method: 'patch',
+        headers: {
+          'apikey': serviceRoleKey,
+          'Authorization': `Bearer ${serviceRoleKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
+        payload: JSON.stringify({
+          first_published_at: wpPost.published_date,
+          updated_at: new Date().toISOString()
+        }),
+        muteHttpExceptions: true
+      });
+      
+      if (updateResponse.getResponseCode() === 204 || updateResponse.getResponseCode() === 200) {
+        Logger.log(`  更新: ${slug} → ${wpPost.published_date}`);
+        updatedCount++;
+      }
+    }
+  });
+  
+  Logger.log(`--- WordPress同期完了: ${updatedCount}件更新 ---`);
+  return updatedCount;
+}
+
+/**
+ * WordPress REST APIから全記事を取得
+ */
+function fetchAllWordPressPosts() {
+  const allPosts = [];
+  let page = 1;
+  let hasMore = true;
+  
+  while (hasMore) {
+    const url = `${DAILY_CONFIG.GSC_SITE_URL}/wp-json/wp/v2/posts?per_page=100&page=${page}&_fields=id,date,slug`;
+    
+    try {
+      const response = UrlFetchApp.fetch(url, {
+        method: 'get',
+        muteHttpExceptions: true
+      });
+      
+      if (response.getResponseCode() !== 200) {
+        hasMore = false;
+        break;
+      }
+      
+      const posts = JSON.parse(response.getContentText());
+      
+      if (posts.length === 0) {
+        hasMore = false;
+      } else {
+        posts.forEach(post => {
+          // slugをデコード（日本語URLの場合）
+          let decodedSlug = post.slug;
+          try {
+            decodedSlug = decodeURIComponent(post.slug);
+          } catch (e) {
+            // デコード失敗時はそのまま使用
+          }
+          
+          allPosts.push({
+            id: post.id,
+            slug: decodedSlug,
+            published_date: post.date
+          });
+        });
+        page++;
+      }
+    } catch (e) {
+      Logger.log(`WordPress APIエラー（page ${page}）: ${e.message}`);
+      hasMore = false;
+    }
+  }
+  
+  return allPosts;
+}
+
+/**
+ * WordPress同期の手動テスト
+ */
+function testWordPressSync() {
+  Logger.log('=== WordPress同期テスト ===');
+  
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  if (!serviceRoleKey) {
+    Logger.log('❌ Service Role Keyが設定されていません');
+    return;
+  }
+  
+  const count = syncWordPressPublishDates(serviceRoleKey);
+  Logger.log(`結果: ${count}件更新`);
 }
