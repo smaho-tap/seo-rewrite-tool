@@ -1948,3 +1948,23 @@ function debugClarityRawColumns() {
     Logger.log(`行${rowIndex + 2}: ${row.join(' | ')}`);
   });
 }
+
+// Clarity週次トリガーを削除（1回だけ実行）
+function removeWeeklyClarityTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let deleted = 0;
+  
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'weeklyClarityUpdate') {
+      ScriptApp.deleteTrigger(trigger);
+      deleted++;
+      Logger.log('✅ 削除: weeklyClarityUpdate');
+    }
+  });
+  
+  if (deleted === 0) {
+    Logger.log('削除対象のトリガーはありませんでした');
+  }
+  
+  Logger.log('完了');
+}
