@@ -37,10 +37,17 @@ function runDailySupabaseUpdate() {
   const pageMapping = getPageMappingForDaily(serviceRoleKey);
   Logger.log(`ページマッピング: ${Object.keys(pageMapping).length}件（投稿ページのみ）`);
   
-  // 前日の日付
+ // 前日の日付（GA4用）
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const dateStr = formatDateForAPI(yesterday);
+  
+  // 3日前の日付（GSC用 - GSCは2-3日遅れるため）
+  const threeDaysAgo = new Date();
+  threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+  const dateStrGSC = formatDateForAPI(threeDaysAgo);
+  
+  Logger.log(`対象日: GA4=${dateStr}, GSC=${dateStrGSC}`);
   
   Logger.log(`対象日: ${dateStr}`);
   
@@ -54,7 +61,7 @@ function runDailySupabaseUpdate() {
   
   // GSCデータ取得・保存
   try {
-    const gscCount = fetchAndSaveGSCDaily(serviceRoleKey, pageMapping, dateStr);
+    const gscCount = fetchAndSaveGSCDaily(serviceRoleKey, pageMapping, dateStrGSC);
     Logger.log(`✅ GSC: ${gscCount}件保存`);
   } catch (e) {
     Logger.log(`❌ GSCエラー: ${e.message}`);
@@ -219,7 +226,7 @@ function fetchAndSaveGSCDaily(serviceRoleKey, pageMapping, dateStr) {
       clicks: Math.round(row.clicks) || 0,
       impressions: Math.round(row.impressions) || 0,
       ctr: row.ctr || 0,
-      position: row.position || 0
+      avg_position: row.position || 0
     });
   });
   

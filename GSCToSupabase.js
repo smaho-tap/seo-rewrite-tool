@@ -503,3 +503,10 @@ function testGSCConnection() {
     return false;
   }
 }
+
+/**
+ * 12月のGSCデータを再取得
+ */
+function fixDecemberGSC() {
+  reprocessGSCSingleMonth(2025, 12);
+}
