@@ -67,6 +67,14 @@ function runDailySupabaseUpdate() {
     Logger.log(`❌ GSCエラー: ${e.message}`);
   }
 
+  // GSCクエリデータ取得・保存
+  try {
+    const queryCount = fetchAndSaveGSCQueriesDaily(serviceRoleKey, pageMapping, dateStrGSC);
+    Logger.log(`✅ GSCクエリ: ${queryCount}件保存`);
+  } catch (e) {
+    Logger.log(`❌ GSCクエリエラー: ${e.message}`);
+  }
+
   // WordPress投稿日同期
   try {
     const wpCount = syncWordPressPublishDates(serviceRoleKey);
@@ -237,6 +245,142 @@ function fetchAndSaveGSCDaily(serviceRoleKey, pageMapping, dateStr) {
   
   // Supabaseに保存
   return saveToSupabase(serviceRoleKey, 'gsc_metrics_daily', records);
+}
+
+/**
+ * GSCクエリ単位データ取得・保存
+ * 主要KWと実クエリの一致度分析用
+ */
+function fetchAndSaveGSCQueriesDaily(serviceRoleKey, pageMapping, dateStr) {
+  Logger.log('--- GSCクエリデータ取得開始 ---');
+  
+  // GSC API呼び出し（ページ×クエリ）
+  const payload = {
+    startDate: dateStr,
+    endDate: dateStr,
+    dimensions: ['page', 'query'],
+    rowLimit: 25000
+  };
+  
+  const response = UrlFetchApp.fetch(
+    `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(DAILY_CONFIG.GSC_SITE_URL)}/searchAnalytics/query`,
+    {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        'Authorization': 'Bearer ' + ScriptApp.getOAuthToken()
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    }
+  );
+  
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`GSC APIエラー: ${response.getContentText()}`);
+  }
+  
+  const data = JSON.parse(response.getContentText());
+  
+  if (!data.rows || data.rows.length === 0) {
+    Logger.log('クエリデータなし');
+    return 0;
+  }
+  
+  Logger.log(`GSC APIから${data.rows.length}件取得`);
+  
+  // Supabase形式に変換
+  const records = [];
+  const siteUrlBase = DAILY_CONFIG.GSC_SITE_URL.replace(/\/$/, '');
+  
+  data.rows.forEach(row => {
+    const fullUrl = row.keys[0];
+    const query = row.keys[1];
+    
+    let path = fullUrl.replace(siteUrlBase, '');
+    if (path.startsWith('/')) {
+      path = path.substring(1);
+    }
+    
+    const pageId = pageMapping[path];
+    if (!pageId) return;
+    
+    if (row.impressions < 5) return;
+    
+    records.push({
+      page_id: pageId,
+      query: query,
+      date: dateStr,
+      impressions: Math.round(row.impressions) || 0,
+      clicks: Math.round(row.clicks) || 0,
+      ctr: row.ctr || 0,
+      position: row.position || 0
+    });
+  });
+  
+  Logger.log(`フィルタ後: ${records.length}件`);
+  
+  if (records.length === 0) return 0;
+  
+  deleteExistingQueryRecords(serviceRoleKey, dateStr);
+  return saveQueriesToSupabase(serviceRoleKey, records);
+}
+
+/**
+ * 既存のクエリレコード削除
+ */
+function deleteExistingQueryRecords(serviceRoleKey, dateStr) {
+  const deleteUrl = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/gsc_queries?date=eq.${dateStr}`;
+  
+  UrlFetchApp.fetch(deleteUrl, {
+    method: 'delete',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal'
+    },
+    muteHttpExceptions: true
+  });
+}
+
+/**
+ * クエリデータをSupabaseに保存（バッチ処理）
+ */
+function saveQueriesToSupabase(serviceRoleKey, records) {
+  const BATCH_SIZE = 500;
+  let totalSaved = 0;
+  
+  for (let i = 0; i < records.length; i += BATCH_SIZE) {
+    const batch = records.slice(i, i + BATCH_SIZE);
+    
+    const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/gsc_queries`;
+    
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      headers: {
+        'apikey': serviceRoleKey,
+        'Authorization': `Bearer ${serviceRoleKey}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      payload: JSON.stringify(batch),
+      muteHttpExceptions: true
+    });
+    
+    const code = response.getResponseCode();
+    
+    if (code === 201 || code === 200) {
+      totalSaved += batch.length;
+    } else {
+      Logger.log(`バッチ保存エラー（${code}）: ${response.getContentText().substring(0, 200)}`);
+    }
+    
+    if (i + BATCH_SIZE < records.length) {
+      Utilities.sleep(300);
+    }
+  }
+  
+  return totalSaved;
 }
 
 /**
@@ -496,4 +640,48 @@ function testWordPressSync() {
   
   const count = syncWordPressPublishDates(serviceRoleKey);
   Logger.log(`結果: ${count}件更新`);
+}
+
+/**
+ * 過去30日分のGSCクエリデータを一括取得（初回移行用）
+ * ★ 1回だけ実行してください
+ */
+function migrateGSCQueries30Days() {
+  Logger.log('=== GSCクエリ 過去30日分移行開始 ===');
+  
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  if (!serviceRoleKey) {
+    Logger.log('❌ Service Role Keyが設定されていません');
+    return;
+  }
+  
+  const pageMapping = getPageMappingForDaily(serviceRoleKey);
+  Logger.log(`ページマッピング: ${Object.keys(pageMapping).length}件`);
+  
+  let totalCount = 0;
+  
+  // 過去30日分を取得（3日前から33日前まで）
+  for (let i = 3; i <= 33; i++) {
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() - i);
+    const dateStr = formatDateForAPI(targetDate);
+    
+    Logger.log(`\n--- ${dateStr} ---`);
+    
+    try {
+      const count = fetchAndSaveGSCQueriesDaily(serviceRoleKey, pageMapping, dateStr);
+      totalCount += count;
+      Logger.log(`✅ ${count}件保存（累計: ${totalCount}件）`);
+      
+      // API制限対策
+      Utilities.sleep(1000);
+      
+    } catch (e) {
+      Logger.log(`❌ エラー: ${e.message}`);
+    }
+  }
+  
+  Logger.log(`\n=== 移行完了: 合計${totalCount}件 ===`);
 }
