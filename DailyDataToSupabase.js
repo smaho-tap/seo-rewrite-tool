@@ -1279,3 +1279,134 @@ function setupOutdatedContentTrigger() {
 function testOutdatedContentCheck() {
   checkOutdatedContentAndNotify();
 }
+
+/**
+ * 外部サイトからの流入を確認（過去60日間）
+ */
+function checkExternalReferrals() {
+  Logger.log('=== 外部サイト流入確認（過去60日間） ===');
+  
+  // 60日前の日付
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() - 1);
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 60);
+  
+  const startStr = formatDateForAPI(startDate);
+  const endStr = formatDateForAPI(endDate);
+  
+  Logger.log(`期間: ${startStr} 〜 ${endStr}`);
+  
+  // GA4 Data API呼び出し（参照元別）
+  const request = {
+    dimensions: [
+      { name: 'sessionSource' },
+      { name: 'sessionMedium' }
+    ],
+    metrics: [
+      { name: 'sessions' },
+      { name: 'screenPageViews' },
+      { name: 'activeUsers' }
+    ],
+    dateRanges: [{ startDate: startStr, endDate: endStr }],
+    orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
+    limit: 50
+  };
+  
+  const report = AnalyticsData.Properties.runReport(request, DAILY_CONFIG.GA4_PROPERTY_ID);
+  
+  if (!report.rows || report.rows.length === 0) {
+    Logger.log('データなし');
+    return;
+  }
+  
+  Logger.log('\n【全参照元一覧（セッション数順）】');
+  Logger.log('参照元 | メディア | セッション | PV | ユーザー');
+  Logger.log('----------------------------------------------------');
+  
+  report.rows.forEach(row => {
+    const source = row.dimensionValues[0].value;
+    const medium = row.dimensionValues[1].value;
+    const sessions = row.metricValues[0].value;
+    const pageviews = row.metricValues[1].value;
+    const users = row.metricValues[2].value;
+    
+    Logger.log(`${source} | ${medium} | ${sessions} | ${pageviews} | ${users}`);
+  });
+  
+  // 特定プラットフォームの検索
+  Logger.log('\n【特定プラットフォームからの流入】');
+  const platforms = ['medium.com', 'note.com', 'blog.livedoor', 'ameblo', 'hatena', 'qiita', 'zenn'];
+  
+  report.rows.forEach(row => {
+    const source = row.dimensionValues[0].value.toLowerCase();
+    platforms.forEach(platform => {
+      if (source.includes(platform)) {
+        Logger.log(`✅ ${row.dimensionValues[0].value}: ${row.metricValues[0].value} セッション`);
+      }
+    });
+  });
+  
+  Logger.log('\n=== 確認完了 ===');
+}
+
+/**
+ * GSCで被リンク元サイトを確認
+ */
+function checkBacklinksFromGSC() {
+  Logger.log('=== GSC 被リンク元サイト確認 ===');
+  
+  const siteUrl = DAILY_CONFIG.GSC_SITE_URL;
+  
+  // GSC API - リンク情報取得
+  const response = UrlFetchApp.fetch(
+    `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`,
+    {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        'Authorization': 'Bearer ' + ScriptApp.getOAuthToken()
+      },
+      payload: JSON.stringify({
+        startDate: '2024-01-01',
+        endDate: '2025-12-17',
+        dimensions: ['page'],
+        dimensionFilterGroups: [{
+          filters: [{
+            dimension: 'page',
+            operator: 'contains',
+            expression: 'smaho-tap.com'
+          }]
+        }],
+        rowLimit: 1
+      }),
+      muteHttpExceptions: true
+    }
+  );
+  
+  // リンク専用APIを試す
+  try {
+    const linksUrl = `https://searchconsole.googleapis.com/v1/sites/${encodeURIComponent(siteUrl)}/links`;
+    
+    const linksResponse = UrlFetchApp.fetch(linksUrl, {
+      method: 'get',
+      headers: {
+        'Authorization': 'Bearer ' + ScriptApp.getOAuthToken()
+      },
+      muteHttpExceptions: true
+    });
+    
+    Logger.log(`Links API Response Code: ${linksResponse.getResponseCode()}`);
+    Logger.log(linksResponse.getContentText());
+    
+  } catch (e) {
+    Logger.log(`Links API エラー: ${e.message}`);
+  }
+  
+  // 代替案: Search Console APIのURL検査機能
+  Logger.log('\n【注意】GSC APIでは被リンク一覧を直接取得できません。');
+  Logger.log('GSC管理画面で確認してください：');
+  Logger.log(`https://search.google.com/search-console/links?resource_id=${encodeURIComponent(siteUrl)}`);
+  
+  Logger.log('\n=== 確認完了 ===');
+}
