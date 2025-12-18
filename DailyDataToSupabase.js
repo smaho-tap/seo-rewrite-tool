@@ -127,16 +127,18 @@ function getPageMappingForDaily(serviceRoleKey) {
  */
 function fetchAndSaveGA4Daily(serviceRoleKey, pageMapping, dateStr) {
   // GA4 Data API呼び出し
-  const request = {
-    dimensions: [{ name: 'pagePath' }],
-    metrics: [
-      { name: 'screenPageViews' },
-      { name: 'sessions' },
-      { name: 'averageSessionDuration' },
-      { name: 'bounceRate' }
-    ],
-    dateRanges: [{ startDate: dateStr, endDate: dateStr }]
-  };
+  // 修正後
+const request = {
+  dimensions: [{ name: 'pagePath' }],
+  metrics: [
+    { name: 'screenPageViews' },
+    { name: 'sessions' },
+    { name: 'userEngagementDuration' },
+    { name: 'activeUsers' },
+    { name: 'bounceRate' }
+  ],
+  dateRanges: [{ startDate: dateStr, endDate: dateStr }]
+};
   
   const report = AnalyticsData.Properties.runReport(request, DAILY_CONFIG.GA4_PROPERTY_ID);
   
@@ -158,14 +160,19 @@ function fetchAndSaveGA4Daily(serviceRoleKey, pageMapping, dateStr) {
     const pageId = pageMapping[pagePath];
     if (!pageId) return;  // 投稿ページ以外はスキップ
     
-    records.push({
-      page_id: pageId,
-      date: dateStr,
-      pageviews: parseInt(row.metricValues[0].value) || 0,
-      unique_pageviews: parseInt(row.metricValues[1].value) || 0,
-      avg_time_on_page: parseFloat(row.metricValues[2].value) || 0,
-      bounce_rate: parseFloat(row.metricValues[3].value) || 0
-    });
+   // 修正後
+const engagementDuration = parseFloat(row.metricValues[2].value) || 0;
+const activeUsers = parseInt(row.metricValues[3].value) || 1;
+const avgTimeOnPage = activeUsers > 0 ? engagementDuration / activeUsers : 0;
+
+records.push({
+  page_id: pageId,
+  date: dateStr,
+  pageviews: parseInt(row.metricValues[0].value) || 0,
+  unique_pageviews: parseInt(row.metricValues[1].value) || 0,
+  avg_time_on_page: avgTimeOnPage,
+  bounce_rate: parseFloat(row.metricValues[4].value) || 0
+});
   });
   
   if (records.length === 0) return 0;
@@ -684,4 +691,591 @@ function migrateGSCQueries30Days() {
   }
   
   Logger.log(`\n=== 移行完了: 合計${totalCount}件 ===`);
+}
+
+/**
+ * GA4欠損データ一括復旧（12/1〜12/10）
+ * ★ 1回だけ実行してください
+ */
+function recoverGA4MissingData() {
+  Logger.log('=== GA4 欠損データ復旧開始 ===');
+  Logger.log(`実行日時: ${new Date().toLocaleString('ja-JP')}`);
+  
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  if (!serviceRoleKey) {
+    Logger.log('❌ Service Role Keyが設定されていません');
+    return;
+  }
+  
+  const pageMapping = getPageMappingForDaily(serviceRoleKey);
+  Logger.log(`ページマッピング: ${Object.keys(pageMapping).length}件`);
+  
+  // 復旧対象の日付リスト（12/1〜12/10）
+  const targetDates = [
+    '2025-12-01',
+    '2025-12-02',
+    '2025-12-03',
+    '2025-12-04',
+    '2025-12-05',
+    '2025-12-06',
+    '2025-12-07',
+    '2025-12-08',
+    '2025-12-09',
+    '2025-12-10'
+  ];
+  
+  let totalCount = 0;
+  let successDays = 0;
+  let failedDays = [];
+  
+  targetDates.forEach((dateStr, index) => {
+    Logger.log(`\n--- [${index + 1}/10] ${dateStr} ---`);
+    
+    try {
+      const count = fetchAndSaveGA4Daily(serviceRoleKey, pageMapping, dateStr);
+      totalCount += count;
+      successDays++;
+      Logger.log(`✅ ${count}件保存（累計: ${totalCount}件）`);
+    } catch (e) {
+      Logger.log(`❌ エラー: ${e.message}`);
+      failedDays.push(dateStr);
+    }
+    
+    // API制限対策（最後以外は1秒待機）
+    if (index < targetDates.length - 1) {
+      Utilities.sleep(1000);
+    }
+  });
+  
+  Logger.log('\n=============================');
+  Logger.log('=== 復旧完了 ===');
+  Logger.log(`成功: ${successDays}/10日`);
+  Logger.log(`合計: ${totalCount}件`);
+  
+  if (failedDays.length > 0) {
+    Logger.log(`失敗した日付: ${failedDays.join(', ')}`);
+  }
+  Logger.log('=============================');
+}
+/**
+ * GA4データ全期間再取得（メトリクス修正後に1回実行）
+ * 11/18〜12/17の30日分を再取得
+ */
+function refreshAllGA4Data() {
+  Logger.log('=== GA4 全データ再取得開始 ===');
+  Logger.log(`実行日時: ${new Date().toLocaleString('ja-JP')}`);
+  
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  if (!serviceRoleKey) {
+    Logger.log('❌ Service Role Keyが設定されていません');
+    return;
+  }
+  
+  const pageMapping = getPageMappingForDaily(serviceRoleKey);
+  Logger.log(`ページマッピング: ${Object.keys(pageMapping).length}件`);
+  
+  let totalCount = 0;
+  let successDays = 0;
+  
+  // 過去30日分を再取得
+  for (let i = 1; i <= 30; i++) {
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() - i);
+    const dateStr = formatDateForAPI(targetDate);
+    
+    Logger.log(`[${i}/30] ${dateStr}`);
+    
+    try {
+      const count = fetchAndSaveGA4Daily(serviceRoleKey, pageMapping, dateStr);
+      totalCount += count;
+      successDays++;
+    } catch (e) {
+      Logger.log(`  ❌ エラー: ${e.message}`);
+    }
+    
+    // API制限対策
+    if (i < 30) {
+      Utilities.sleep(500);
+    }
+  }
+  
+  Logger.log('\n=============================');
+  Logger.log(`完了: ${successDays}/30日, 合計${totalCount}件`);
+  Logger.log('=============================');
+}
+
+/**
+ * ========================================
+ * リライト効果通知機能
+ * ========================================
+ */
+
+// 通知先メールアドレス（ご自身のアドレスに変更してください）
+const NOTIFICATION_EMAIL = 'foster_inc@icloud.com';
+
+/**
+ * リマインダーチェック＆メール送信（毎朝実行）
+ */
+function checkAndSendRewriteReminders() {
+  Logger.log('=== リライト効果通知チェック開始 ===');
+  
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  if (!serviceRoleKey) {
+    Logger.log('❌ Service Role Keyが設定されていません');
+    return;
+  }
+  
+  // 今日通知すべきリマインダーを取得
+  const reminders = getPendingReminders(serviceRoleKey);
+  
+  if (reminders.length === 0) {
+    Logger.log('通知すべきリマインダーはありません');
+    return;
+  }
+  
+  Logger.log(`${reminders.length}件のリマインダーを処理します`);
+  
+  reminders.forEach(reminder => {
+    try {
+      // Before/After効果データを取得
+      const effectData = getRewriteEffect(serviceRoleKey, reminder.page_id, reminder.implemented_at);
+      
+      // メール送信
+      sendEffectEmail(reminder, effectData);
+      
+      // 送信済みにマーク
+      markReminderSent(serviceRoleKey, reminder.reminder_id);
+      
+      Logger.log(`✅ 送信完了: ${reminder.page_path}`);
+    } catch (e) {
+      Logger.log(`❌ エラー: ${reminder.page_path} - ${e.message}`);
+    }
+  });
+  
+  Logger.log('=== リライト効果通知チェック完了 ===');
+}
+
+/**
+ * 保留中のリマインダーを取得
+ */
+function getPendingReminders(serviceRoleKey) {
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/rpc/get_pending_reminders`;
+  
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json'
+    },
+    payload: '{}',
+    muteHttpExceptions: true
+  });
+  
+  if (response.getResponseCode() !== 200) {
+    Logger.log(`リマインダー取得エラー: ${response.getContentText()}`);
+    return [];
+  }
+  
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * リライト効果データを取得（Before/After比較）
+ */
+function getRewriteEffect(serviceRoleKey, pageId, implementedAt) {
+  const implementedDate = new Date(implementedAt);
+  const beforeStart = new Date(implementedDate);
+  beforeStart.setDate(beforeStart.getDate() - 7);
+  const afterEnd = new Date();
+  
+  // GSCデータで比較（Before: 実施前7日間, After: 実施後〜現在）
+  const beforeData = getGSCMetrics(serviceRoleKey, pageId, formatDateForAPI(beforeStart), formatDateForAPI(implementedDate));
+  const afterData = getGSCMetrics(serviceRoleKey, pageId, formatDateForAPI(implementedDate), formatDateForAPI(afterEnd));
+  
+  return {
+    before: beforeData,
+    after: afterData,
+    change: {
+      clicks: afterData.clicks - beforeData.clicks,
+      impressions: afterData.impressions - beforeData.impressions,
+      avg_position: beforeData.avg_position - afterData.avg_position, // 順位は低いほど良い
+      ctr: afterData.ctr - beforeData.ctr
+    }
+  };
+}
+
+/**
+ * GSCメトリクス取得（期間集計）
+ */
+function getGSCMetrics(serviceRoleKey, pageId, startDate, endDate) {
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/gsc_metrics_daily?page_id=eq.${pageId}&date=gte.${startDate}&date=lt.${endDate}&select=clicks,impressions,ctr,avg_position`;
+  
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json'
+    },
+    muteHttpExceptions: true
+  });
+  
+  if (response.getResponseCode() !== 200) {
+    return { clicks: 0, impressions: 0, ctr: 0, avg_position: 0, days: 0 };
+  }
+  
+  const rows = JSON.parse(response.getContentText());
+  
+  if (rows.length === 0) {
+    return { clicks: 0, impressions: 0, ctr: 0, avg_position: 0, days: 0 };
+  }
+  
+  const totals = rows.reduce((acc, row) => {
+    acc.clicks += row.clicks || 0;
+    acc.impressions += row.impressions || 0;
+    acc.positions.push(row.avg_position || 0);
+    return acc;
+  }, { clicks: 0, impressions: 0, positions: [] });
+  
+  const avgPosition = totals.positions.length > 0 
+    ? totals.positions.reduce((a, b) => a + b, 0) / totals.positions.length 
+    : 0;
+  
+  return {
+    clicks: totals.clicks,
+    impressions: totals.impressions,
+    ctr: totals.impressions > 0 ? (totals.clicks / totals.impressions * 100) : 0,
+    avg_position: avgPosition,
+    days: rows.length
+  };
+}
+
+/**
+ * 効果レポートメール送信
+ */
+function sendEffectEmail(reminder, effectData) {
+  const subject = `【リライト効果レポート】${reminder.page_path}`;
+  
+  const positionChange = effectData.change.avg_position;
+  const positionEmoji = positionChange > 0 ? '📈' : (positionChange < 0 ? '📉' : '➡️');
+  
+  const body = `
+リライト効果レポート
+====================
+
+■ ページ情報
+パス: ${reminder.page_path}
+タイトル: ${reminder.page_title}
+リライト種別: ${reminder.rewrite_type}
+実施日: ${new Date(reminder.implemented_at).toLocaleDateString('ja-JP')}
+
+■ 変更内容
+【Before】
+${reminder.before_content || '(記録なし)'}
+
+【After】
+${reminder.after_content || '(記録なし)'}
+
+■ 効果測定（GSCデータ）
+
+【Before（実施前7日間）】
+・クリック数: ${effectData.before.clicks}
+・表示回数: ${effectData.before.impressions}
+・平均順位: ${effectData.before.avg_position.toFixed(1)}位
+・CTR: ${effectData.before.ctr.toFixed(2)}%
+
+【After（実施後〜現在）】
+・クリック数: ${effectData.after.clicks}
+・表示回数: ${effectData.after.impressions}
+・平均順位: ${effectData.after.avg_position.toFixed(1)}位
+・CTR: ${effectData.after.ctr.toFixed(2)}%
+
+■ 変化 ${positionEmoji}
+・クリック数: ${effectData.change.clicks >= 0 ? '+' : ''}${effectData.change.clicks}
+・表示回数: ${effectData.change.impressions >= 0 ? '+' : ''}${effectData.change.impressions}
+・順位変動: ${positionChange >= 0 ? '+' : ''}${positionChange.toFixed(1)}位
+・CTR変動: ${effectData.change.ctr >= 0 ? '+' : ''}${effectData.change.ctr.toFixed(2)}%
+
+====================
+SEOリライト支援ツール
+`;
+  
+  MailApp.sendEmail({
+    to: NOTIFICATION_EMAIL,
+    subject: subject,
+    body: body
+  });
+}
+
+/**
+ * リマインダーを送信済みにマーク
+ */
+function markReminderSent(serviceRoleKey, reminderId) {
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/rpc/mark_reminder_sent`;
+  
+  UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify({ p_reminder_id: reminderId }),
+    muteHttpExceptions: true
+  });
+}
+
+/**
+ * リマインダー通知トリガー設定（1回実行）
+ */
+function setupReminderTrigger() {
+  // 既存トリガー削除
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'checkAndSendRewriteReminders') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // 毎日午前7時に実行（日次更新の後）
+  ScriptApp.newTrigger('checkAndSendRewriteReminders')
+    .timeBased()
+    .atHour(7)
+    .everyDays(1)
+    .create();
+  
+  Logger.log('✅ リマインダー通知トリガー設定完了（毎朝7時）');
+}
+
+/**
+ * リマインダー手動登録（チャットから呼び出し用）
+ */
+function registerReminderManual(rewriteHistoryId, daysAfter) {
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/rpc/register_rewrite_reminder`;
+  
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify({
+      p_rewrite_history_id: rewriteHistoryId,
+      p_days_after: daysAfter || 7
+    }),
+    muteHttpExceptions: true
+  });
+  
+  Logger.log(response.getContentText());
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * ========================================
+ * 古い情報検出＆通知機能
+ * ========================================
+ */
+
+/**
+ * 古い情報をチェックしてメール通知（月次実行）
+ */
+function checkOutdatedContentAndNotify() {
+  Logger.log('=== 古い情報チェック開始 ===');
+  
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  if (!serviceRoleKey) {
+    Logger.log('❌ Service Role Keyが設定されていません');
+    return;
+  }
+  
+  // 現在の年を取得
+  const currentYear = new Date().getFullYear();
+  Logger.log(`現在の年: ${currentYear}`);
+  
+  // 検出結果を保存
+  const savedCount = saveOutdatedAlerts(serviceRoleKey, currentYear);
+  Logger.log(`検出・保存件数: ${savedCount}`);
+  
+  // 通知すべきアラートを取得
+  const alerts = getOutdatedAlertsForNotification(serviceRoleKey);
+  
+  if (alerts.length === 0) {
+    Logger.log('通知すべき古い情報はありません');
+    return;
+  }
+  
+  Logger.log(`通知対象: ${alerts.length}件`);
+  
+  // メール送信
+  sendOutdatedContentEmail(alerts, currentYear);
+  
+  Logger.log('=== 古い情報チェック完了 ===');
+}
+
+/**
+ * 検出結果を保存
+ */
+function saveOutdatedAlerts(serviceRoleKey, currentYear) {
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/rpc/save_outdated_alerts`;
+  
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify({ p_current_year: currentYear }),
+    muteHttpExceptions: true
+  });
+  
+  if (response.getResponseCode() !== 200) {
+    Logger.log(`保存エラー: ${response.getContentText()}`);
+    return 0;
+  }
+  
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * 通知すべきアラートを取得
+ */
+function getOutdatedAlertsForNotification(serviceRoleKey) {
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/rpc/get_outdated_alerts_for_notification`;
+  
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json'
+    },
+    payload: '{}',
+    muteHttpExceptions: true
+  });
+  
+  if (response.getResponseCode() !== 200) {
+    Logger.log(`取得エラー: ${response.getContentText()}`);
+    return [];
+  }
+  
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * 古い情報検出メールを送信
+ */
+function sendOutdatedContentEmail(alerts, currentYear) {
+  const subject = `【確認依頼】古い情報が検出されました（${alerts.length}件）`;
+  
+  // 緊急度別に分類
+  const highUrgency = alerts.filter(a => a.urgency_level === 'high');
+  const mediumUrgency = alerts.filter(a => a.urgency_level === 'medium');
+  const lowUrgency = alerts.filter(a => a.urgency_level === 'low');
+  
+  let body = `
+古い情報検出レポート
+====================
+検出日: ${new Date().toLocaleDateString('ja-JP')}
+現在の年: ${currentYear}年
+
+以下のページに古い年号が検出されました。
+更新が必要かどうかご確認ください。
+
+`;
+
+  if (highUrgency.length > 0) {
+    body += `\n■ 要確認度：高（${highUrgency.length}件）\n`;
+    body += `  「最新」「おすすめ」等を含むため更新推奨\n`;
+    body += `-----------------------------------------\n`;
+    highUrgency.forEach(alert => {
+      body += `・${alert.path}\n`;
+      body += `  タイトル: ${alert.title}\n`;
+      body += `  検出年号: ${alert.detected_year}年\n\n`;
+    });
+  }
+  
+  if (mediumUrgency.length > 0) {
+    body += `\n■ 要確認度：中（${mediumUrgency.length}件）\n`;
+    body += `  1年前の情報\n`;
+    body += `-----------------------------------------\n`;
+    mediumUrgency.forEach(alert => {
+      body += `・${alert.path}\n`;
+      body += `  タイトル: ${alert.title}\n`;
+      body += `  検出年号: ${alert.detected_year}年\n\n`;
+    });
+  }
+  
+  if (lowUrgency.length > 0) {
+    body += `\n■ 要確認度：低（${lowUrgency.length}件）\n`;
+    body += `  歴史的事実の可能性あり\n`;
+    body += `-----------------------------------------\n`;
+    lowUrgency.forEach(alert => {
+      body += `・${alert.path}\n`;
+      body += `  タイトル: ${alert.title}\n`;
+      body += `  検出年号: ${alert.detected_year}年\n\n`;
+    });
+  }
+  
+  body += `
+====================
+【対応方法】
+・更新が必要な場合 → リライトを実施
+・更新不要の場合 → チャットで「〇〇は対応不要にして」とお伝えください
+
+※対応不要にしたページは、次の年になるまで再通知されません。
+
+SEOリライト支援ツール
+`;
+
+  MailApp.sendEmail({
+    to: NOTIFICATION_EMAIL,
+    subject: subject,
+    body: body
+  });
+  
+  Logger.log('✅ メール送信完了');
+}
+
+/**
+ * 古い情報チェックのトリガー設定（1回実行）
+ * 毎月1日の午前8時に実行
+ */
+function setupOutdatedContentTrigger() {
+  // 既存トリガー削除
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'checkOutdatedContentAndNotify') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // 毎月1日に実行
+  ScriptApp.newTrigger('checkOutdatedContentAndNotify')
+    .timeBased()
+    .onMonthDay(1)
+    .atHour(8)
+    .create();
+  
+  Logger.log('✅ 古い情報チェックトリガー設定完了（毎月1日 午前8時）');
+}
+
+/**
+ * 手動テスト用
+ */
+function testOutdatedContentCheck() {
+  checkOutdatedContentAndNotify();
 }
