@@ -1410,3 +1410,342 @@ function checkBacklinksFromGSC() {
   
   Logger.log('\n=== 確認完了 ===');
 }
+
+/**
+ * 新規追加ページの過去14ヶ月分GA4データを取得
+ * ★ ページ追加後に1回実行
+ */
+function backfillGA4ForNewPages14Months() {
+  Logger.log('=== 新規ページGA4バックフィル（14ヶ月分）開始 ===');
+  
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  if (!serviceRoleKey) {
+    Logger.log('❌ Service Role Keyが設定されていません');
+    return;
+  }
+  
+  // 対象ページのpage_idを取得
+  const targetPaths = [
+    '/iphonerepair-fastcharging-demerit-note',
+    '/iphonerepair-seawater-trouble',
+    '/purchase-iphone-used-precautions',
+    '/nagoya-iphone-kaitori-2024',
+    '/yokohama-iphone-kaitori-2024'
+  ];
+  
+  // ページマッピング取得
+  const pageMapping = getPageMappingForDaily(serviceRoleKey);
+  
+  // 対象ページのみのマッピングを作成
+  const targetMapping = {};
+  targetPaths.forEach(path => {
+    const pathWithoutSlash = path.substring(1);
+    if (pageMapping[pathWithoutSlash]) {
+      targetMapping[pathWithoutSlash] = pageMapping[pathWithoutSlash];
+    }
+  });
+  
+  Logger.log(`対象ページ: ${Object.keys(targetMapping).length}件`);
+  
+  // 14ヶ月分の月リストを生成（2024年10月〜2025年12月）
+  const months = [];
+  let year = 2024;
+  let month = 10;
+  
+  while (year < 2025 || (year === 2025 && month <= 12)) {
+    months.push({ year, month });
+    month++;
+    if (month > 12) {
+      month = 1;
+      year++;
+    }
+  }
+  
+  Logger.log(`対象期間: ${months.length}ヶ月`);
+  
+  let totalCount = 0;
+  
+  months.forEach((m, index) => {
+    const startDate = `${m.year}-${String(m.month).padStart(2, '0')}-01`;
+    const lastDay = new Date(m.year, m.month, 0).getDate();
+    const endDate = `${m.year}-${String(m.month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    
+    Logger.log(`\n[${index + 1}/${months.length}] ${m.year}年${m.month}月`);
+    
+    try {
+      // GA4 Data API呼び出し
+      const request = {
+        dimensions: [
+          { name: 'date' },
+          { name: 'pagePath' }
+        ],
+        metrics: [
+          { name: 'screenPageViews' },
+          { name: 'sessions' },
+          { name: 'userEngagementDuration' },
+          { name: 'activeUsers' },
+          { name: 'bounceRate' }
+        ],
+        dateRanges: [{ startDate: startDate, endDate: endDate }],
+        limit: 50000
+      };
+      
+      const report = AnalyticsData.Properties.runReport(request, DAILY_CONFIG.GA4_PROPERTY_ID);
+      
+      if (!report.rows || report.rows.length === 0) {
+        Logger.log('  データなし');
+        return;
+      }
+      
+      // 対象ページのみフィルタリング
+      const records = [];
+      
+      report.rows.forEach(row => {
+        const rawDate = row.dimensionValues[0].value;
+        const formattedDate = `${rawDate.substring(0,4)}-${rawDate.substring(4,6)}-${rawDate.substring(6,8)}`;
+        
+        let pagePath = row.dimensionValues[1].value;
+        if (pagePath.startsWith('/')) {
+          pagePath = pagePath.substring(1);
+        }
+        
+        const pageId = targetMapping[pagePath];
+        if (!pageId) return;  // 対象外ページはスキップ
+        
+        const engagementDuration = parseFloat(row.metricValues[2].value) || 0;
+        const activeUsers = parseInt(row.metricValues[3].value) || 1;
+        const avgTimeOnPage = activeUsers > 0 ? engagementDuration / activeUsers : 0;
+        
+        records.push({
+          page_id: pageId,
+          date: formattedDate,
+          pageviews: parseInt(row.metricValues[0].value) || 0,
+          unique_pageviews: parseInt(row.metricValues[1].value) || 0,
+          avg_time_on_page: avgTimeOnPage,
+          bounce_rate: parseFloat(row.metricValues[4].value) || 0
+        });
+      });
+      
+      if (records.length > 0) {
+        // Supabaseに保存（upsert）
+        const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/ga4_metrics_daily`;
+        
+        const response = UrlFetchApp.fetch(url, {
+          method: 'post',
+          headers: {
+            'apikey': serviceRoleKey,
+            'Authorization': `Bearer ${serviceRoleKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates'
+          },
+          payload: JSON.stringify(records),
+          muteHttpExceptions: true
+        });
+        
+        if (response.getResponseCode() === 201 || response.getResponseCode() === 200) {
+          totalCount += records.length;
+          Logger.log(`  ✅ ${records.length}件保存（累計: ${totalCount}件）`);
+        } else {
+          Logger.log(`  ❌ エラー: ${response.getContentText().substring(0, 100)}`);
+        }
+      } else {
+        Logger.log('  対象ページのデータなし');
+      }
+      
+      // API制限対策
+      Utilities.sleep(1000);
+      
+    } catch (e) {
+      Logger.log(`  ❌ エラー: ${e.message}`);
+    }
+  });
+  
+  Logger.log(`\n=== 完了: 合計${totalCount}件 ===`);
+}
+
+/**
+ * ========================================
+ * WordPress新規ページ自動同期
+ * ========================================
+ */
+
+/**
+ * WordPress新規記事をpagesテーブルに自動追加
+ * 週次トリガーで実行
+ */
+function syncNewPagesFromWordPress() {
+  Logger.log('=== WordPress新規ページ同期開始 ===');
+  
+  const serviceRoleKey = PropertiesService.getScriptProperties()
+    .getProperty('SUPABASE_SERVICE_ROLE_KEY');
+  
+  if (!serviceRoleKey) {
+    Logger.log('❌ Service Role Keyが設定されていません');
+    return 0;
+  }
+  
+  // 1. Supabaseの既存ページ一覧を取得
+  const existingPaths = getExistingPagePaths(serviceRoleKey);
+  Logger.log(`既存ページ数: ${existingPaths.size}件`);
+  
+  // 2. WordPressの全記事を取得
+  const wpPosts = fetchAllWordPressPosts();
+  Logger.log(`WordPress記事数: ${wpPosts.length}件`);
+  
+  // 3. 差分を検出
+  const newPages = wpPosts.filter(post => {
+    const path = '/' + post.slug;
+    return !existingPaths.has(path);
+  });
+  
+  if (newPages.length === 0) {
+    Logger.log('✅ 新規ページはありません');
+    return 0;
+  }
+  
+  Logger.log(`🆕 新規ページ検出: ${newPages.length}件`);
+  newPages.forEach(p => Logger.log(`  - /${p.slug}`));
+  
+  // 4. pagesテーブルに追加
+  const records = newPages.map(post => ({
+    site_id: DAILY_CONFIG.SITE_ID,
+    path: '/' + post.slug,
+    title: decodeHtmlEntities(post.title),
+    status: 'active',
+    first_published_at: post.published_date
+  }));
+  
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/pages`;
+  
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
+    },
+    payload: JSON.stringify(records),
+    muteHttpExceptions: true
+  });
+  
+  if (response.getResponseCode() === 201) {
+    Logger.log(`✅ ${newPages.length}件追加完了`);
+    
+    // メール通知
+    sendNewPageNotification(newPages);
+    
+    return newPages.length;
+  } else {
+    Logger.log(`❌ エラー: ${response.getContentText()}`);
+    return 0;
+  }
+}
+
+/**
+ * 既存ページパス一覧を取得
+ */
+function getExistingPagePaths(serviceRoleKey) {
+  const url = `${DAILY_CONFIG.SUPABASE_URL}/rest/v1/pages?site_id=eq.${DAILY_CONFIG.SITE_ID}&select=path`;
+  
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: {
+      'apikey': serviceRoleKey,
+      'Authorization': `Bearer ${serviceRoleKey}`
+    },
+    muteHttpExceptions: true
+  });
+  
+  const pages = JSON.parse(response.getContentText());
+  return new Set(pages.map(p => p.path));
+}
+
+/**
+ * HTMLエンティティをデコード
+ */
+function decodeHtmlEntities(text) {
+  if (!text) return '';
+  return text
+    .replace(/&#8217;/g, "'")
+    .replace(/&#8216;/g, "'")
+    .replace(/&#8220;/g, '"')
+    .replace(/&#8221;/g, '"')
+    .replace(/&#038;/g, '&')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"');
+}
+
+/**
+ * 新規ページ追加通知メール
+ */
+function sendNewPageNotification(newPages) {
+  const subject = `【SEOツール】新規ページ ${newPages.length}件を追加しました`;
+  
+  let body = `WordPress新規ページをpagesテーブルに追加しました。\n\n`;
+  body += `【追加ページ】\n`;
+  newPages.forEach(p => {
+    body += `・/${p.slug}\n`;
+    body += `  タイトル: ${p.title}\n`;
+    body += `  公開日: ${p.published_date}\n\n`;
+  });
+  
+  body += `\n【次のステップ】\n`;
+  body += `1. 翌日からGA4/GSC日次データ収集が開始されます\n`;
+  body += `2. 必要に応じてターゲットKWを設定してください\n`;
+  body += `3. 過去データが必要な場合はGA4バックフィルを実行してください\n`;
+  
+  MailApp.sendEmail({
+    to: NOTIFICATION_EMAIL,
+    subject: subject,
+    body: body
+  });
+  
+  Logger.log('📧 通知メール送信完了');
+}
+
+/**
+ * 週次ページ同期トリガー設定（1回実行）
+ */
+function setupWeeklyPageSyncTrigger() {
+  // 既存トリガー削除
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'syncNewPagesFromWordPress') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // 毎週月曜6:30に実行
+  ScriptApp.newTrigger('syncNewPagesFromWordPress')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
+    .atHour(6)
+    .nearMinute(30)
+    .create();
+  
+  Logger.log('✅ 週次ページ同期トリガー設定完了（毎週月曜6:30）');
+}
+
+/**
+ * 手動テスト用
+ */
+function testSyncNewPages() {
+  const count = syncNewPagesFromWordPress();
+  Logger.log(`結果: ${count}件追加`);
+}
+
+function removeWeeklyPageSyncTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'syncNewPagesFromWordPress') {
+      ScriptApp.deleteTrigger(trigger);
+      Logger.log('トリガー削除: syncNewPagesFromWordPress');
+    }
+  });
+  Logger.log('✅ 週次ページ同期トリガーを削除しました');
+}
