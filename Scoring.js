@@ -834,36 +834,7 @@ ${wpData && wpData.hasTable ? '- このページには既にテーブルがあ�
   return prompt;
 }
 
-/**
- * 週次自動分析を実行
- */
-function runWeeklyAnalysis() {
-  Logger.log('=== 週次自動分析開始 ===');
-  
-  try {
-    // スコアリング実行
-    calculateScores();
-    
-    // 優先度上位10ページを取得
-    const topPages = getTopPriorityPagesFiltered(10);
-    
-    // レポート生成
-    const report = generateWeeklyReport(topPages);
-    
-    // メール送信
-    sendWeeklyReportEmail(report);
-    
-    // ログ記録
-    logWeeklyAnalysis(topPages);
-    
-    Logger.log('=== 週次自動分析完了 ===');
-    
-  } catch (error) {
-    Logger.log(`エラー: ${error.message}`);
-    sendErrorEmail(error);
-    throw error;
-  }
-}
+
 
 /**
  * 週次レポート生成

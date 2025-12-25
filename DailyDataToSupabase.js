@@ -1749,3 +1749,74 @@ function removeWeeklyPageSyncTrigger() {
   });
   Logger.log('✅ 週次ページ同期トリガーを削除しました');
 }
+
+/**
+ * 旧システムのトリガーを削除
+ * 1回実行すればOK
+ */
+function removeOldSystemTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  
+  // 旧システムの関数名リスト
+  const oldSystemFunctions = [
+    'dailyUpdate',           // DataCollection.gs（旧）
+    'weeklyClarityUpdate',   // ClarityIntegration.gs（旧）
+    'runWeeklyAnalysis'      // Scoring.gs（旧）- 念のため
+  ];
+  
+  let removed = 0;
+  
+  triggers.forEach(trigger => {
+    const funcName = trigger.getHandlerFunction();
+    if (oldSystemFunctions.includes(funcName)) {
+      ScriptApp.deleteTrigger(trigger);
+      Logger.log(`✅ 削除: ${funcName}`);
+      removed++;
+    }
+  });
+  
+  Logger.log(`\n=== 結果 ===`);
+  Logger.log(`削除したトリガー: ${removed} 件`);
+  
+  // 残っているトリガーを表示
+  const remaining = ScriptApp.getProjectTriggers();
+  Logger.log(`\n残りのトリガー: ${remaining.length} 件`);
+  remaining.forEach(t => {
+    Logger.log(`  - ${t.getHandlerFunction()}`);
+  });
+}
+
+function removeCompetitorAnalysisTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  
+  // 旧競合分析の関数名リスト
+  const oldFunctions = [
+    'runBatch1',
+    'runBatch2',
+    'runBatch3',
+    'runBatch4',
+    'runBatch5',
+    'weeklyDARetry'
+  ];
+  
+  let removed = 0;
+  
+  triggers.forEach(trigger => {
+    const funcName = trigger.getHandlerFunction();
+    if (oldFunctions.includes(funcName)) {
+      ScriptApp.deleteTrigger(trigger);
+      Logger.log(`✅ 削除: ${funcName}`);
+      removed++;
+    }
+  });
+  
+  Logger.log(`\n=== 結果 ===`);
+  Logger.log(`削除したトリガー: ${removed} 件`);
+  
+  // 残っているトリガーを表示
+  const remaining = ScriptApp.getProjectTriggers();
+  Logger.log(`\n残りのトリガー: ${remaining.length} 件`);
+  remaining.forEach(t => {
+    Logger.log(`  - ${t.getHandlerFunction()}`);
+  });
+}
