@@ -1820,3 +1820,22 @@ function removeCompetitorAnalysisTriggers() {
     Logger.log(`  - ${t.getHandlerFunction()}`);
   });
 }
+
+function setupReminderTrigger() {
+  // 既存トリガー削除
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'checkAndSendRewriteReminders') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // 毎日午前10時に実行（UTC 1:00 = JST 10:00）
+  ScriptApp.newTrigger('checkAndSendRewriteReminders')
+    .timeBased()
+    .atHour(10)
+    .everyDays(1)
+    .create();
+  
+  Logger.log('✅ リマインダー通知トリガー設定完了（毎朝10時）');
+}
